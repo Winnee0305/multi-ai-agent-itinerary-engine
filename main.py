@@ -24,25 +24,10 @@ class UserRequest(BaseModel):
     pois: List[str]        # list of POI names
     location: str
 
-@app.post("/recommend")
-async def recommend(request: UserRequest):
-    # 1. Get info for each POI
-    info_list = [info_agent.fetch_info(poi, request.location, request.preferences) 
-                 for poi in request.pois]
-    # 2. Generate recommendations
-    rec_list = rec_agent.recommend(info_list, request.preferences)
-    # 3. Plan itinerary
-    plan = planner_agent.plan(rec_list)
-    # 4. Optimize route
-    optimized = optimizer_agent.optimize(plan)
-    return {"itinerary": optimized}
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
-
-
-# #uvicorn main:app --reload
+@app.post("/getDescription")
+async def describe(request: UserRequest):
+    desc = info_agent.fetch_single_poi_info(request.pois[0])
+    return desc["description"]
 
 def test_recommendation():
     # Example test data
@@ -76,9 +61,13 @@ def test_recommendation():
 # Run test when file is executed directly
 if __name__ == "__main__":
 
-    # test_recommendation()
+    test_recommendation()
     #Optionally start the FastAPI server as well
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
     # ===== Run in terminal to start local server =====
-    # uvicorn main:app --reload
+    # uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    # ===== Access API documentation =====
+    # http://127.0.0.1:8000/docs#/default/describe_getDescription_post
+
+
