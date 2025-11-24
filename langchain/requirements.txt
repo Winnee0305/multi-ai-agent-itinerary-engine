@@ -8,3 +8,5 @@ geopandas
 pandas
 numpy
 shapely
+SPARQLWrapper
+fuzzywuzzy
