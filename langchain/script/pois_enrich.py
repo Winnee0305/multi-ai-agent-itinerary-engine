@@ -1,25 +1,17 @@
 """
 POI Enrichment Script
 Enriches Malaysia POI data with popularity scores using:
-1. Wikidata (Sitelinks)
-2. Golden List (Top attractions)
-3. Google Places API (selective, for high-scoring POIs only)
+1. Golden List (Top attractions)
+2. Wikidata (Sitelinks)
 """
 
 import json
 import time
-import os
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
-import requests
-from dotenv import load_dotenv
 from SPARQLWrapper import SPARQLWrapper, JSON as SPARQL_JSON
 from fuzzywuzzy import fuzz
 
-load_dotenv()
-
-# Google Places API Key
-GOOGLE_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
 # Golden List: Top attractions per state
 TOP_POIS_MALAYSIA = {
@@ -177,9 +169,9 @@ TOP_POIS_MALAYSIA = {
 
     "Malacca": [
         "A Famosa", "St Paul's Hill", "Christ Church", "Dutch Square",
-        "Jonker Street", "Maritime Museum", "Melaka River Cruise",
+        "Jonker Street", "Jonker Walk", "Jonker Street Night Market", "Maritime Museum", "Melaka River Cruise",
         "The Shore Sky Tower", "Menara Taming Sari", "Melaka Sultanate Palace Museum",
-        "Baba Nyonya Heritage Museum", "Klebang Beach", "Klebang Coconut Shake",
+        "Baba Nyonya Heritage Museum", "Klebang Beach", "Klebang Coconut Shake", "Klebang Original Coconut Shake",
         "Encore Melaka", "Submarine Museum", "A Famosa Safari Wonderland",
         "A Famosa Water Theme Park", "Melaka Wonderland", "Cheng Hoon Teng Temple",
         "Kampung Morten", "Masjid Selat Melaka (Floating Mosque)",
@@ -605,8 +597,6 @@ class POIEnricher:
         self.data_path = Path(data_path)
         self.sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
         self.sparql.setReturnFormat(SPARQL_JSON)
-        self.google_api_calls = 0
-        self.google_api_limit = 1000  # Set your daily limit
         
         # Cache for Wikidata results
         self.wikidata_cache = {}
@@ -644,7 +634,7 @@ class POIEnricher:
                     poi.get("name", "").lower(), 
                     golden_poi_name.lower()
                 )
-                if similarity >= 75:  # 75% similarity threshold
+                if similarity >= 65:  # 65% similarity threshold
                     return poi
         
         return None
@@ -778,53 +768,6 @@ class POIEnricher:
             print(f"    ⚠ Wikidata error for '{poi_name}': {e}")
             return 0
     
-    def fetch_google_places_rating(self, poi_name: str, lat: float, lon: float) -> Optional[Tuple[float, int]]:
-        """
-        Fetch Google Places rating and review count
-        
-        Args:
-            poi_name: Name of the POI
-            lat: Latitude
-            lon: Longitude
-            
-        Returns:
-            Tuple of (rating, review_count) or None if not found
-        """
-        if not GOOGLE_API_KEY:
-            print("    ⚠ Google API key not configured")
-            return None
-        
-        if self.google_api_calls >= self.google_api_limit:
-            print("    ⚠ Google API daily limit reached")
-            return None
-        
-        try:
-            url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-            params = {
-                "location": f"{lat},{lon}",
-                "radius": 100,  # 100 meters
-                "keyword": poi_name,
-                "key": GOOGLE_API_KEY
-            }
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            self.google_api_calls += 1
-            
-            if data["results"]:
-                place = data["results"][0]
-                rating = place.get("rating", 0)
-                user_ratings_total = place.get("user_ratings_total", 0)
-                return (rating, user_ratings_total)
-            
-            return None
-            
-        except Exception as e:
-            print(f"    ⚠ Google Places error for '{poi_name}': {e}")
-            return None
-    
     def calculate_popularity_score(self, poi: Dict, golden_index: Dict) -> Tuple[int, Dict]:
         """
         Calculate popularity score for a POI using prebuilt golden index
@@ -832,7 +775,6 @@ class POIEnricher:
         Scoring Logic (Golden List Priority):
         - Golden list membership: 70 points (local knowledge & tourist relevance)
         - Wikidata sitelinks: +2 points each (international recognition bonus)
-        - Google Places rating ≥4.0: rating × 20 (user validation bonus)
         - Non-golden POIs: 0 points
         
         Args:
@@ -845,9 +787,7 @@ class POIEnricher:
         score = 0
         metadata = {
             "wikidata_sitelinks": 0,
-            "in_golden_list": False,
-            "google_rating": None,
-            "google_reviews": None
+            "in_golden_list": False
         }
         
         poi_id = poi.get("id")
@@ -871,21 +811,6 @@ class POIEnricher:
             # Wikidata bonus (×2 multiplier - validation signal)
             if golden_data["wikidata_sitelinks"] > 0:
                 score += (golden_data["wikidata_sitelinks"] * 2)
-            
-            # Google Places bonus (only for POIs with low Wikidata recognition)
-            # Rationale: High Wikidata sitelinks = already validated internationally
-            # Low sitelinks = local gems that benefit from Google rating validation
-            if golden_data["wikidata_sitelinks"] < 10:
-                google_data = self.fetch_google_places_rating(poi_name, lat, lon)
-                if google_data:
-                    rating, reviews = google_data
-                    metadata["google_rating"] = rating
-                    metadata["google_reviews"] = reviews
-                    
-                    # Add bonus if rating is 4.0 or above
-                    if rating >= 4.0:
-                        google_bonus = int(rating * 20)
-                        score += google_bonus
         else:
             # Regular POI - score remains 0
             score = 0
@@ -945,9 +870,7 @@ class POIEnricher:
                 **poi,
                 "popularity_score": score,
                 "wikidata_sitelinks": metadata["wikidata_sitelinks"],
-                "in_golden_list": metadata["in_golden_list"],
-                "google_rating": metadata["google_rating"],
-                "google_reviews": metadata["google_reviews"]
+                "in_golden_list": metadata["in_golden_list"]
             }
             enriched_pois.append(enriched_poi)
         
@@ -959,8 +882,7 @@ class POIEnricher:
                 "total_pois": len(enriched_pois),
                 "golden_pois_found": golden_count,
                 "golden_pois_missing": len(self.stats["missing_golden_pois"]),
-                "wikidata_queries": self.stats["wikidata_queries"],
-                "google_api_calls": self.google_api_calls
+                "wikidata_queries": self.stats["wikidata_queries"]
             },
             "pois": enriched_pois
         }
@@ -983,7 +905,6 @@ class POIEnricher:
         print(f"Golden POIs found in dataset: {golden_count}")
         print(f"Regular POIs (score=0): {len(enriched_pois) - golden_count}")
         print(f"Wikidata queries made: {self.stats['wikidata_queries']}")
-        print(f"Google API calls used: {self.google_api_calls}")
         print("="*80)
 
 
