@@ -19,7 +19,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
 def fetch_google_places_rating(poi_name: str, lat: float, lon: float):
     """
-    Fetch Google Places rating, review count, and place types with fuzzy name matching
+    Fetch Google Places rating, review count, place types, and place_id with fuzzy name matching
     
     Args:
         poi_name: Name of the POI
@@ -27,7 +27,7 @@ def fetch_google_places_rating(poi_name: str, lat: float, lon: float):
         lon: Longitude
         
     Returns:
-        Tuple of (rating, review_count, matched_name, place_types) or None if not found
+        Tuple of (rating, review_count, matched_name, place_types, place_id) or None if not found
     """
     if not GOOGLE_API_KEY:
         print("⚠️  Google API key not configured")
@@ -66,12 +66,13 @@ def fetch_google_places_rating(poi_name: str, lat: float, lon: float):
                 user_ratings_total = best_match.get("user_ratings_total", 0)
                 matched_name = best_match.get("name", "")
                 place_types = best_match.get("types", [])
+                place_id = best_match.get("place_id", "")
                 
                 # Show match quality if names differ
                 if best_similarity < 100:
                     print(f"  🔍 Fuzzy match: '{poi_name}' → '{matched_name}' ({best_similarity}% similar)")
                 
-                return (rating, user_ratings_total, matched_name, place_types)
+                return (rating, user_ratings_total, matched_name, place_types, place_id)
         
         return None
             
@@ -144,19 +145,28 @@ def main():
     
     print(f"✅ Loaded {total_pois} POIs")
     
-    # Filter for golden POIs with low Wikidata sitelinks
+    # Filter for golden POIs with low Wikidata sitelinks that need Google data
     print("\n🔍 Filtering golden POIs with Wikidata sitelinks < 10...")
     
     candidates = []
+    already_enriched = 0
     for poi in pois:
         if poi.get("in_golden_list") and poi.get("wikidata_sitelinks", 0) < 10:
-            candidates.append(poi)
+            # Only fetch if we don't already have the place_id
+            if not poi.get("google_place_id"):
+                candidates.append(poi)
+            else:
+                already_enriched += 1
     
-    print(f"✅ Found {len(candidates)} golden POIs with low Wikidata recognition")
-    print(f"   (Will fetch Google ratings for these)")
+    print(f"✅ Found {len(candidates)} golden POIs needing Google enrichment")
+    print(f"   Already enriched: {already_enriched}")
+    print(f"   (Will only fetch missing data)")
     
     if len(candidates) == 0:
-        print("\n⚠️  No candidates found. Make sure POIs have been enriched with golden list data first.")
+        if already_enriched > 0:
+            print("\n✅ All eligible POIs already have Google Place IDs. No API calls needed!")
+        else:
+            print("\n⚠️  No candidates found. Make sure POIs have been enriched with golden list data first.")
         return
     
     # Fetch Google ratings and calculate scores
@@ -183,17 +193,19 @@ def main():
         google_api_calls += 1
         
         if google_data:
-            rating, reviews, matched_name, place_types = google_data
+            rating, reviews, matched_name, place_types, place_id = google_data
             print(f"  ✅ Google: {rating}⭐ ({reviews} reviews)")
             if matched_name != poi_name:
                 print(f"     Matched to: '{matched_name}'")
             print(f"  🏷️  Place types: {', '.join(place_types[:5])}{'...' if len(place_types) > 5 else ''}")
+            print(f"  🆔 Place ID: {place_id}")
             
             # Update POI with Google data
             poi["google_rating"] = rating
             poi["google_reviews"] = reviews
             poi["google_matched_name"] = matched_name
             poi["google_types"] = place_types
+            poi["google_place_id"] = place_id
             
             # Recalculate score with Google rating
             new_score = calculate_popularity_score(
@@ -250,10 +262,13 @@ def main():
     print("ENRICHMENT SUMMARY")
     print("="*80)
     print(f"Total POIs in dataset: {total_pois}")
-    print(f"Golden POIs with Wikidata < 10: {len(candidates)}")
+    print(f"Golden POIs with Wikidata < 10: {len(candidates) + already_enriched}")
+    print(f"  - Already had Place IDs: {already_enriched}")
+    print(f"  - Needed enrichment: {len(candidates)}")
     print(f"Google API calls made: {google_api_calls}")
     print(f"POIs enriched with Google ratings: {enriched_count}")
-    print(f"Success rate: {(enriched_count/len(candidates)*100):.1f}%")
+    if len(candidates) > 0:
+        print(f"Success rate: {(enriched_count/len(candidates)*100):.1f}%")
     
     if pois_with_ratings:
         print(f"\n📊 Top 10 POIs with Google Ratings:")

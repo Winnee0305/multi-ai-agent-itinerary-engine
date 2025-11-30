@@ -1,4 +1,33 @@
+requests
+aiohttp
+asyncio
+psycopg2-binary
+python-dotenv
+supabase
+geopandas
+pandas
+numpy
+shapely
+SPARQLWrapper
+fuzzywuzzy
+
+# NEW - LangChain Stack
+langchain
+langchain-google-genai
+langgraph
+langsmith  # Optional: for tracing
+
+# NEW - Database
+supabase
+postgrest
+
+# NEW - LLM Providers
+google-generativeai
+
+# NEW - Data Models
+pydantic
+pydantic-settings
+
+# NEW - API (if building web interface)
 fastapi
 uvicorn
-pydantic
-google-generativeai
