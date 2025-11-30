@@ -1,33 +1,39 @@
+# Core Dependencies
 requests
 aiohttp
 asyncio
-psycopg2-binary
 python-dotenv
+
+# Database
+psycopg2-binary
 supabase
+postgrest
+
+# Geospatial
 geopandas
 pandas
 numpy
 shapely
+
+# Utilities
 SPARQLWrapper
 fuzzywuzzy
 
-# NEW - LangChain Stack
+# LangChain Core (Official create_agent API)
 langchain
+langchain-core
+langchain-community
 langchain-google-genai
 langgraph
-langsmith  # Optional: for tracing
 
-# NEW - Database
-supabase
-postgrest
+# LangChain Optional
+langsmith  # Optional: for tracing and monitoring
+langgraph-checkpoint-postgres  # Optional: for production memory persistence
 
-# NEW - LLM Providers
-google-generativeai
-
-# NEW - Data Models
+# Data Models & Validation
 pydantic
 pydantic-settings
 
-# NEW - API (if building web interface)
+# API (Optional - if building web interface)
 fastapi
-uvicorn
+uvicorn[standard]
