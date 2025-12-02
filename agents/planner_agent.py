@@ -5,14 +5,12 @@ from config.settings import settings
 from config.prompts import PLANNER_AGENT_SYSTEM_PROMPT
 from database.supabase_client import get_supabase
 from tools.planner_tools import (
-    get_poi_by_place_id,
-    get_pois_by_priority_list,
-    calculate_distance_between_pois,
-    get_pois_near_centroid,
-    calculate_distances_from_centroid,
-    select_best_centroid,
-    cluster_pois_by_distance,
-    generate_optimal_sequence
+    get_poi_by_place_id_tool,
+    calculate_distance_tool,
+    get_pois_near_centroid_tool,
+    cluster_pois_tool,
+    generate_optimal_sequence_tool,
+    plan_itinerary_tool # The main orchestrator tool
 )
 
 model = ChatGoogleGenerativeAI(
@@ -22,14 +20,12 @@ model = ChatGoogleGenerativeAI(
 
 # Define tools for planner agent
 planner_tools = [
-    get_poi_by_place_id,
-    get_pois_by_priority_list,
-    calculate_distance_between_pois,
-    get_pois_near_centroid,
-    calculate_distances_from_centroid,
-    select_best_centroid,
-    cluster_pois_by_distance,
-    generate_optimal_sequence
+    get_poi_by_place_id_tool,
+    calculate_distance_tool,
+    get_pois_near_centroid_tool,
+    cluster_pois_tool,
+    generate_optimal_sequence_tool,
+    plan_itinerary_tool
 ]
 
 planner_agent = create_agent(

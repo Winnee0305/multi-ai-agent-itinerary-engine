@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
-from agents.tools import (
+from tools.planner_tools import (
     select_best_centroid,
     calculate_distances_from_centroid,
     cluster_pois_by_distance,
@@ -114,12 +114,15 @@ async def select_centroid_endpoint(request: SelectCentroidRequest):
     Returns the POI with highest priority score as centroid.
     """
     try:
+
+        config = {"configurable": {"thread_id": "select-centroid-001"}}
+
         priority_pois_list = [poi.model_dump() for poi in request.priority_pois]
         
         centroid = select_best_centroid.invoke({
             "top_priority_pois": priority_pois_list,
             "consider_top_n": request.consider_top_n
-        })
+        }, config = config)
         
         return {
             "success": True,
@@ -137,10 +140,13 @@ async def calculate_distance_endpoint(request: CalculateDistanceRequest):
     Returns distance in meters.
     """
     try:
+
+        config = {"configurable": {"thread_id": "calculate-distance-001"}}
+
         distance = calculate_distance_between_pois.invoke({
             "place_id_1": request.place_id_1,
             "place_id_2": request.place_id_2
-        })
+        }, config = config)
         
         if distance == -1.0:
             raise HTTPException(status_code=404, detail="One or both POIs not found")
@@ -164,11 +170,14 @@ async def cluster_pois_endpoint(request: ClusterPOIsRequest):
     Uses PostGIS to calculate distances.
     """
     try:
+
+        config = {"configurable": {"thread_id": "cluster-pois-001"}}
+
         clusters = cluster_pois_by_distance.invoke({
             "centroid_place_id": request.centroid_place_id,
             "poi_list": request.poi_list,
             "max_distance_meters": request.max_distance_meters
-        })
+        }, config = config)
         
         return {
             "success": True,
@@ -191,10 +200,13 @@ async def generate_sequence_endpoint(request: GenerateSequenceRequest):
     Returns sequenced itinerary with distances.
     """
     try:
+
+        config = {"configurable": {"thread_id": "generate-sequence-001"}}
+
         sequence = generate_optimal_sequence.invoke({
             "poi_place_ids": request.poi_place_ids,
             "start_place_id": request.start_place_id
-        })
+        }, config = config)
         
         # Calculate total distance
         total_distance = sum(
@@ -227,13 +239,16 @@ async def plan_itinerary_endpoint(request: PlanItineraryRequest):
     Returns complete sequenced itinerary.
     """
     try:
+
+        config = {"configurable": {"thread_id": "test-trip-001"}}
+
         priority_pois_list = [poi.model_dump() for poi in request.priority_pois]
         
         # Step 1: Select centroid
         centroid = select_best_centroid.invoke({
             "top_priority_pois": priority_pois_list,
             "consider_top_n": 5
-        })
+        }, config = config)
         
         centroid_place_id = centroid.get("google_place_id")
         
@@ -246,14 +261,14 @@ async def plan_itinerary_endpoint(request: PlanItineraryRequest):
         distances = calculate_distances_from_centroid.invoke({
             "centroid_place_id": centroid_place_id,
             "poi_place_ids": poi_place_ids
-        })
+        }, config = config)
         
         # Step 4: Cluster POIs
         clusters = cluster_pois_by_distance.invoke({
             "centroid_place_id": centroid_place_id,
             "poi_list": top_50_pois,
             "max_distance_meters": request.max_distance_meters
-        })
+        }, config = config)
         
         nearby_pois = clusters.get("nearby", [])
         
@@ -267,7 +282,7 @@ async def plan_itinerary_endpoint(request: PlanItineraryRequest):
         sequence = generate_optimal_sequence.invoke({
             "poi_place_ids": selected_place_ids,
             "start_place_id": centroid_place_id
-        })
+        }, config = config)
         
         # Calculate total distance
         total_distance = sum(
@@ -311,11 +326,14 @@ async def get_nearby_pois_endpoint(
         max_results: Maximum number of results (default 20)
     """
     try:
+
+        config = {"configurable": {"thread_id": "nearby-pois-001"}}
+
         nearby = get_pois_near_centroid.invoke({
             "centroid_place_id": place_id,
             "radius_meters": radius_meters,
             "max_results": max_results
-        })
+        }, config = config)
         
         return {
             "success": True,

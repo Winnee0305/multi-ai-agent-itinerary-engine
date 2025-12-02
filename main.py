@@ -5,7 +5,7 @@ Multi-Agent Itinerary Engine - FastAPI Application
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import planner
+from routers import planner, recommender, supervisor
 
 # Create FastAPI app
 app = FastAPI(
@@ -24,6 +24,8 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(supervisor.router)
+app.include_router(recommender.router)
 app.include_router(planner.router)
 
 
@@ -34,9 +36,13 @@ async def root():
         "message": "Multi-Agent Itinerary Engine API",
         "version": "1.0.0",
         "docs": "/docs",
+        "architecture": "Supervisor Pattern",
         "endpoints": {
-            "planner": "/planner/*"
-        }
+            "supervisor": "/supervisor/* (Main - coordinates all agents)",
+            "recommender": "/recommender/* (Sub-agent for POI recommendations)",
+            "planner": "/planner/* (Sub-agent for route planning)"
+        },
+        "recommended_endpoint": "/supervisor/chat"
     }
 
 

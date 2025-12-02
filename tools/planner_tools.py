@@ -2,108 +2,78 @@
 Tools for Planner Agent - Distance calculations and itinerary sequencing using PostGIS
 """
 
-from langchain.tools import tool
-from typing import List, Dict, Any
+from langchain_core.tools import StructuredTool
+from typing import List, Dict, Any, Optional
 from database.supabase_client import get_supabase
+import math
 
+# ==============================================================================
+# 1. HELPER FUNCTIONS (Pure Python)
+# ==============================================================================
 
-@tool
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """
+    Calculate the great circle distance between two points 
+    on the earth (specified in decimal degrees).
+    Returns distance in meters.
+    """
+    R = 6371000  # Radius of earth in meters
+    
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    
+    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    return R * c
+
+# ==============================================================================
+# 2. CORE LOGIC (Public Functions - No Decorators)
+# ==============================================================================
+
 def get_poi_by_place_id(google_place_id: str) -> Dict[str, Any]:
-    """
-    Get POI details from Supabase by Google Place ID.
-    
-    Args:
-        google_place_id: Google Place ID of the POI
-        
-    Returns:
-        Dictionary with POI details (id, name, lat, lon, google_place_id, etc.)
-    """
+    """Internal logic to get POI details."""
     supabase = get_supabase()
-    
     result = supabase.table("osm_pois").select("*").eq("google_place_id", google_place_id).execute()
     
     if result.data and len(result.data) > 0:
         return result.data[0]
-    else:
-        return {"error": f"POI not found for place_id: {google_place_id}"}
+    return {"error": f"POI not found for place_id: {google_place_id}"}
 
 
-@tool
 def get_pois_by_priority_list(priority_pois: List[Dict[str, Any]], limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    Fetch full POI details from Supabase for a list of priority-scored POIs.
-    
-    Args:
-        priority_pois: List of POIs with priority_score and google_place_id
-        limit: Maximum number of POIs to return
-        
-    Returns:
-        List of POI dictionaries with full details from database
-    """
+    """Internal logic to fetch full details."""
     supabase = get_supabase()
-    
-    # Extract place IDs
     place_ids = [poi.get("google_place_id") for poi in priority_pois[:limit] if poi.get("google_place_id")]
     
     if not place_ids:
         return []
     
     result = supabase.table("osm_pois").select("*").in_("google_place_id", place_ids).execute()
-    
     return result.data if result.data else []
 
 
-@tool
 def calculate_distance_between_pois(place_id_1: str, place_id_2: str) -> float:
-    """
-    Calculate distance in meters between two POIs using PostGIS.
-    
-    Args:
-        place_id_1: Google Place ID of first POI
-        place_id_2: Google Place ID of second POI
-        
-    Returns:
-        Distance in meters
-    """
+    """Internal logic for single distance calc."""
     supabase = get_supabase()
     
-    # Get coordinates for both POIs
-    poi1 = supabase.table("osm_pois").select("lat, lon").eq("google_place_id", place_id_1).execute()
-    poi2 = supabase.table("osm_pois").select("lat, lon").eq("google_place_id", place_id_2).execute()
+    # Optimized: Fetch both in one query
+    result = supabase.table("osm_pois").select("lat, lon").in_("google_place_id", [place_id_1, place_id_2]).execute()
     
-    if not poi1.data or not poi2.data:
+    if not result.data or len(result.data) < 2:
         return -1.0
-    
-    lat1, lon1 = poi1.data[0]["lat"], poi1.data[0]["lon"]
-    lat2, lon2 = poi2.data[0]["lat"], poi2.data[0]["lon"]
-    
-    # Use PostGIS RPC function
-    result = supabase.rpc("calculate_distance", {
-        "lat1": lat1,
-        "lon1": lon1,
-        "lat2": lat2,
-        "lon2": lon2
-    }).execute()
-    
-    return result.data if result.data else -1.0
-
-
-@tool
-def get_pois_near_centroid(centroid_place_id: str, radius_meters: int = 50000, max_results: int = 50) -> List[Dict[str, Any]]:
-    """
-    Get POIs near a centroid POI using PostGIS spatial query.
-    
-    Args:
-        centroid_place_id: Google Place ID of centroid POI
-        radius_meters: Search radius in meters (default 50km)
-        max_results: Maximum number of results
         
-    Returns:
-        List of nearby POIs with distance_meters field
-    """
-    supabase = get_supabase()
+    # We don't know which order they came back in, but distance is symmetric
+    p1 = result.data[0]
+    p2 = result.data[1]
     
-    # Get centroid coordinates
+    return haversine_distance(p1['lat'], p1['lon'], p2['lat'], p2['lon'])
+
+
+def get_pois_near_centroid(centroid_place_id: str, radius_meters: int = 50000, max_results: int = 50) -> List[Dict[str, Any]]:
+    """Internal logic for radial search."""
+    supabase = get_supabase()
     centroid = supabase.table("osm_pois").select("lat, lon").eq("google_place_id", centroid_place_id).execute()
     
     if not centroid.data:
@@ -112,7 +82,7 @@ def get_pois_near_centroid(centroid_place_id: str, radius_meters: int = 50000, m
     center_lat = centroid.data[0]["lat"]
     center_lon = centroid.data[0]["lon"]
     
-    # Use PostGIS RPC function to find nearby POIs
+    # Use PostGIS for the initial heavy filtering (finding neighbors)
     result = supabase.rpc("get_nearby_pois", {
         "center_lat": center_lat,
         "center_lon": center_lon,
@@ -125,73 +95,43 @@ def get_pois_near_centroid(centroid_place_id: str, radius_meters: int = 50000, m
     return result.data if result.data else []
 
 
-@tool
 def calculate_distances_from_centroid(centroid_place_id: str, poi_place_ids: List[str]) -> List[Dict[str, Any]]:
-    """
-    Calculate distances from centroid to multiple POIs.
-    
-    Args:
-        centroid_place_id: Google Place ID of centroid
-        poi_place_ids: List of Google Place IDs to calculate distances to
-        
-    Returns:
-        List of dictionaries with {google_place_id, name, distance_meters}
-    """
+    """Internal logic for batch distance calc."""
     supabase = get_supabase()
     
-    # Get centroid coordinates
+    # 1. Get Centroid
     centroid = supabase.table("osm_pois").select("id, lat, lon").eq("google_place_id", centroid_place_id).execute()
-    
     if not centroid.data:
         return []
     
     center_lat = centroid.data[0]["lat"]
     center_lon = centroid.data[0]["lon"]
     
-    # Get POI IDs from place_ids
-    pois = supabase.table("osm_pois").select("id, google_place_id, name").in_("google_place_id", poi_place_ids).execute()
-    
+    # 2. Get Targets
+    pois = supabase.table("osm_pois").select("id, google_place_id, name, lat, lon").in_("google_place_id", poi_place_ids).execute()
     if not pois.data:
         return []
-    
-    poi_ids = [poi["id"] for poi in pois.data]
-    
-    # Use PostGIS RPC function
-    result = supabase.rpc("get_pois_with_distances", {
-        "poi_ids": poi_ids,
-        "center_lat": center_lat,
-        "center_lon": center_lon
-    }).execute()
-    
-    if not result.data:
-        return []
-    
-    # Add google_place_id to results
-    place_id_map = {poi["id"]: poi["google_place_id"] for poi in pois.data}
-    
-    for item in result.data:
-        item["google_place_id"] = place_id_map.get(item["id"])
-    
-    return result.data
-
-
-@tool
-def select_best_centroid(top_priority_pois: List[Dict[str, Any]], consider_top_n: int = 5) -> Dict[str, Any]:
-    """
-    Select the best centroid from top N priority POIs.
-    Simply returns the highest priority POI as centroid.
-    
-    Args:
-        top_priority_pois: List of POIs sorted by priority_score
-        consider_top_n: Consider top N POIs (default 5)
         
-    Returns:
-        Best centroid POI with reason
-    """
+    results = []
+    
+    # 3. Calculate locally (Much faster than RPC for batch of 20-50)
+    for poi in pois.data:
+        dist = haversine_distance(center_lat, center_lon, poi['lat'], poi['lon'])
+        results.append({
+            "id": poi['id'],
+            "google_place_id": poi['google_place_id'],
+            "name": poi['name'],
+            "distance_meters": dist
+        })
+        
+    return results
+
+
+def select_best_centroid(top_priority_pois: List[Dict[str, Any]], consider_top_n: int = 5) -> Dict[str, Any]:
+    """Internal logic for centroid selection."""
     if not top_priority_pois:
         return {"error": "No POIs provided"}
     
-    # Simple strategy: pick the highest priority POI
     candidates = top_priority_pois[:consider_top_n]
     centroid = candidates[0]
     
@@ -205,49 +145,34 @@ def select_best_centroid(top_priority_pois: List[Dict[str, Any]], consider_top_n
     }
 
 
-@tool
 def cluster_pois_by_distance(
     centroid_place_id: str,
     poi_list: List[Dict[str, Any]],
     max_distance_meters: int = 30000
 ) -> Dict[str, Any]:
-    """
-    Cluster POIs based on distance from centroid.
-    
-    Args:
-        centroid_place_id: Google Place ID of centroid
-        poi_list: List of POIs with google_place_id
-        max_distance_meters: Maximum distance for clustering (default 30km)
-        
-    Returns:
-        Dictionary with 'nearby' and 'far' POI lists
-    """
+    """Internal logic for clustering."""
     place_ids = [poi.get("google_place_id") for poi in poi_list if poi.get("google_place_id")]
     
     if not place_ids:
         return {"nearby": [], "far": []}
     
-    # Calculate distances
+    # Call internal function
     distances = calculate_distances_from_centroid(centroid_place_id, place_ids)
     
     nearby = []
     far = []
     
     for dist_info in distances:
+        item = {
+            "google_place_id": dist_info["google_place_id"],
+            "name": dist_info["name"],
+            "distance_meters": dist_info["distance_meters"]
+        }
         if dist_info["distance_meters"] <= max_distance_meters:
-            nearby.append({
-                "google_place_id": dist_info["google_place_id"],
-                "name": dist_info["name"],
-                "distance_meters": dist_info["distance_meters"]
-            })
+            nearby.append(item)
         else:
-            far.append({
-                "google_place_id": dist_info["google_place_id"],
-                "name": dist_info["name"],
-                "distance_meters": dist_info["distance_meters"]
-            })
+            far.append(item)
     
-    # Sort by distance
     nearby.sort(key=lambda x: x["distance_meters"])
     far.sort(key=lambda x: x["distance_meters"])
     
@@ -259,37 +184,30 @@ def cluster_pois_by_distance(
     }
 
 
-@tool
 def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> List[Dict[str, Any]]:
-    """
-    Generate optimal visit sequence using nearest neighbor algorithm.
-    
-    Args:
-        poi_place_ids: List of Google Place IDs to sequence
-        start_place_id: Starting POI (centroid)
-        
-    Returns:
-        List of POIs in optimal sequence with {google_place_id, google_matched_name, sequence_no}
-    """
+    """Internal logic for sequencing (OPTIMIZED)."""
     supabase = get_supabase()
     
     if not poi_place_ids:
         return []
     
-    # Get full POI details
-    all_place_ids = [start_place_id] + poi_place_ids
+    # 1. Fetch ALL data in ONE network call
+    all_place_ids = list(set([start_place_id] + poi_place_ids))
     pois = supabase.table("osm_pois").select("google_place_id, name, lat, lon").in_("google_place_id", all_place_ids).execute()
     
     if not pois.data:
         return []
     
-    # Create lookup map
     poi_map = {poi["google_place_id"]: poi for poi in pois.data}
     
-    # Nearest neighbor sequencing
+    # 2. Sequencing logic (Pure Python, no network calls)
     sequence = []
     current_place_id = start_place_id
     remaining = set(poi_place_ids)
+    # Remove start from remaining if it's there
+    if start_place_id in remaining:
+        remaining.remove(start_place_id)
+        
     sequence_no = 1
     
     # Add start POI
@@ -297,11 +215,11 @@ def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> 
         sequence.append({
             "google_place_id": current_place_id,
             "google_matched_name": poi_map[current_place_id]["name"],
-            "sequence_no": sequence_no
+            "sequence_no": sequence_no,
+            "distance_from_previous_meters": 0
         })
         sequence_no += 1
     
-    # Greedy nearest neighbor
     while remaining:
         current_poi = poi_map.get(current_place_id)
         if not current_poi:
@@ -309,24 +227,20 @@ def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> 
         
         current_lat, current_lon = current_poi["lat"], current_poi["lon"]
         
-        # Find nearest unvisited POI
         min_distance = float('inf')
         nearest_place_id = None
         
+        # Calculate distance to all remaining neighbors in MEMORY
         for place_id in remaining:
             poi = poi_map.get(place_id)
             if not poi:
                 continue
             
-            # Calculate distance using PostGIS
-            result = supabase.rpc("calculate_distance", {
-                "lat1": current_lat,
-                "lon1": current_lon,
-                "lat2": poi["lat"],
-                "lon2": poi["lon"]
-            }).execute()
-            
-            distance = result.data if result.data else float('inf')
+            # Use local haversine function
+            distance = haversine_distance(
+                current_lat, current_lon, 
+                poi["lat"], poi["lon"]
+            )
             
             if distance < min_distance:
                 min_distance = distance
@@ -337,14 +251,101 @@ def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> 
                 "google_place_id": nearest_place_id,
                 "google_matched_name": poi_map[nearest_place_id]["name"],
                 "sequence_no": sequence_no,
-                "distance_from_previous_meters": min_distance
+                "distance_from_previous_meters": round(min_distance, 2)
             })
             sequence_no += 1
             remaining.remove(nearest_place_id)
             current_place_id = nearest_place_id
         else:
             break
-    
+            
     return sequence
 
 
+def plan_itinerary_logic(
+    priority_pois: List[Dict[str, Any]],
+    max_pois_per_day: int = 6,
+    max_distance_threshold: int = 30000
+) -> Dict[str, Any]:
+    """
+    Orchestrator logic for planning.
+    Combines centroid selection, clustering, and sequencing.
+    """
+    # 1. Select Centroid
+    centroid_info = select_best_centroid(priority_pois)
+    if "error" in centroid_info:
+        return {"error": "Could not select centroid"}
+        
+    centroid_id = centroid_info["google_place_id"]
+    
+    # 2. Cluster
+    clusters = cluster_pois_by_distance(centroid_id, priority_pois, max_distance_threshold)
+    
+    # 3. Sequence (Focus on 'nearby' cluster for now)
+    target_pois = [p["google_place_id"] for p in clusters["nearby"]]
+    
+    # Remove centroid from target list to avoid duplication if it's in there
+    if centroid_id in target_pois:
+        target_pois.remove(centroid_id)
+        
+    sequence = generate_optimal_sequence(target_pois, centroid_id)
+    
+    return {
+        "centroid": centroid_info,
+        "clusters": clusters,
+        "optimized_sequence": sequence,
+        "total_pois": len(sequence)
+    }
+
+# ==============================================================================
+# 3. EXPORTED TOOLS (Wrappers)
+# ==============================================================================
+
+get_poi_by_place_id_tool = StructuredTool.from_function(
+    func=get_poi_by_place_id,
+    name="get_poi_by_place_id",
+    description="Get POI details by place ID."
+)
+
+get_pois_by_priority_list_tool = StructuredTool.from_function(
+    func=get_pois_by_priority_list,
+    name="get_pois_by_priority_list",
+    description="Fetch full POI details for a list of priority-scored POIs."
+)
+
+calculate_distance_tool = StructuredTool.from_function(
+    func=calculate_distance_between_pois,
+    name="calculate_distance_between_pois",
+    description="Calculate distance in meters between two POIs."
+)
+
+get_pois_near_centroid_tool = StructuredTool.from_function(
+    func=get_pois_near_centroid,
+    name="get_pois_near_centroid",
+    description="Get POIs near a centroid POI."
+)
+
+select_best_centroid_tool = StructuredTool.from_function(
+    func=select_best_centroid,
+    name="select_best_centroid",
+    description="Select the best centroid from top priority POIs."
+)
+
+cluster_pois_tool = StructuredTool.from_function(
+    func=cluster_pois_by_distance,
+    name="cluster_pois_by_distance",
+    description="Cluster POIs based on distance from centroid."
+)
+
+generate_optimal_sequence_tool = StructuredTool.from_function(
+    func=generate_optimal_sequence,
+    name="generate_optimal_sequence",
+    description="Generate optimal visit sequence using nearest neighbor algorithm."
+)
+
+# Main orchestrator tool
+plan_itinerary_tool = StructuredTool.from_function(
+    func=plan_itinerary_logic,
+    name="plan_itinerary_logic",
+    description="Complete workflow: Selects centroid, clusters POIs, and sequences them."
+)
