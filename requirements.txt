@@ -24,14 +24,17 @@ langchain
 langchain-core
 langchain-community
 langchain-google-genai
+
+# LangGraph (New Architecture - Required)
 langgraph
+langgraph-checkpoint
 
 # LangChain Optional
 langsmith  # Optional: for tracing and monitoring
 langgraph-checkpoint-postgres  # Optional: for production memory persistence
 
 # Data Models & Validation
-pydantic
+pydantic>=2.0
 pydantic-settings
 
 # API (Optional - if building web interface)

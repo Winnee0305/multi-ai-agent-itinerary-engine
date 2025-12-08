@@ -69,8 +69,8 @@ def validate_settings():
     if not settings.SERVICE_ROLE_KEY:
         errors.append("SERVICE_ROLE_KEY not configured")
     
-    if not settings.OPENAI_API_KEY:
-        errors.append("OPENAI_API_KEY not configured")
+    if not settings.GEMINI_API_KEY:
+        errors.append("GEMINI_API_KEY not configured")
     
     if errors:
         raise ValueError(f"Missing required configuration: {', '.join(errors)}")

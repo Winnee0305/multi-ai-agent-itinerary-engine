@@ -54,7 +54,30 @@ def calculate_priority_scores(
     travel_days: int,
     preferred_poi_names: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
-    """Internal logic to calculate scores."""
+    """
+    Calculate contextual priority scores based on user context.
+    
+    Score Range: 0-200+ (unbounded, can exceed 100)
+    - Base popularity score: 0-100
+    - Multipliers can boost score beyond 100
+    - Higher scores = higher priority
+    
+    Multipliers:
+    - Preferred POI: ×2.0
+    - Interest match: ×1.5
+    - Group safety penalty: ×0.8
+    - Landmark boost: ×1.2
+    
+    Args:
+        pois: List of POIs with popularity_score field
+        user_preferences: List of interest categories
+        number_of_travelers: Group size
+        travel_days: Trip duration in days
+        preferred_poi_names: Optional list of specific POI names
+        
+    Returns:
+        List of POIs with priority_score field (sorted descending)
+    """
     scored_pois = []
     
     for poi in pois:
@@ -113,12 +136,12 @@ def calculate_priority_scores(
         if travel_days < 3 and wikidata_sitelinks >= 20:
             current_score *= 1.2
         
-        # Normalize
-        priority_score = min(current_score / 100.0, 1.0)
+        # Keep raw score (no normalization) - matches old implementation
+        priority_score = current_score
         
         scored_pois.append({
             **poi,
-            "priority_score": round(priority_score, 2)
+            "priority_score": round(priority_score, 1)
         })
     
     scored_pois.sort(key=lambda x: x["priority_score"], reverse=True)
