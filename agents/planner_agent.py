@@ -128,17 +128,24 @@ def create_planner_node(model=None):
             clusters = cluster_pois_by_distance(
                 centroid_place_id=centroid_id,
                 poi_list=top_priority_pois,
-                max_distance_meters=30000  # 30km threshold
+                max_distance_meters=50000  # 50km threshold (increased for larger states)
             )
             
-            # Focus on nearby POIs (within 30km)
+            # Focus on nearby POIs (within 50km)
             nearby_pois = clusters.get("nearby", [])
             
-            if not nearby_pois:
+            # If not enough nearby POIs, include some far POIs
+            if len(nearby_pois) < 10:
+                far_pois = clusters.get("far", [])
+                # Add closest far POIs to reach a minimum of 10 total POIs
+                additional_count = min(10 - len(nearby_pois), len(far_pois))
+                nearby_pois.extend(far_pois[:additional_count])
+            
+            if len(nearby_pois) <= 1:  # Only centroid found
                 return {
-                    "messages": [AIMessage(content=f"No POIs found within 30km of centroid: {centroid_name}")],
+                    "messages": [AIMessage(content=f"Not enough POIs found near centroid: {centroid_name}")],
                     "next_step": "error",
-                    "error_message": "No nearby POIs for clustering"
+                    "error_message": "Insufficient POIs for itinerary planning"
                 }
             
             # Step 3: Generate optimal sequence (nearest-neighbor algorithm)
