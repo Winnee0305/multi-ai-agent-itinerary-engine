@@ -17,6 +17,22 @@ router = APIRouter(prefix="/recommender", tags=["Recommender"])
 
 
 # Request/Response Models
+class UserBehavior(BaseModel):
+    """User behavioral signals from Flutter app"""
+    viewed_place_ids: List[str] = Field(default=[], description="POIs user has viewed")
+    collected_place_ids: List[str] = Field(default=[], description="POIs user has bookmarked/collected")
+    trip_place_ids: List[str] = Field(default=[], description="POIs in user's saved trips")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "viewed_place_ids": ["ChIJabc123", "ChIJdef456"],
+                "collected_place_ids": ["ChIJghi789"],
+                "trip_place_ids": ["ChIJjkl012", "ChIJmno345"]
+            }
+        }
+
+
 class RecommendationRequest(BaseModel):
     """Request for trip recommendations"""
     destination_state: str = Field(..., description="Target state (e.g., 'Penang', 'Kuala Lumpur')")
@@ -24,6 +40,7 @@ class RecommendationRequest(BaseModel):
     number_of_travelers: int = Field(..., ge=1, description="Number of travelers")
     trip_duration_days: int = Field(..., ge=1, description="Trip duration in days")
     preferred_poi_names: Optional[List[str]] = Field(default=None, description="Specific POI names user wants to visit")
+    user_behavior: Optional[UserBehavior] = Field(default=None, description="User behavioral signals from Flutter app")
     top_n: int = Field(default=50, ge=1, le=100, description="Number of top POIs to return")
     
     class Config:
@@ -34,6 +51,11 @@ class RecommendationRequest(BaseModel):
                 "number_of_travelers": 2,
                 "trip_duration_days": 3,
                 "preferred_poi_names": ["Kek Lok Si Temple", "Penang Hill"],
+                "user_behavior": {
+                    "viewed_place_ids": ["ChIJabc123"],
+                    "collected_place_ids": ["ChIJdef456"],
+                    "trip_place_ids": ["ChIJghi789"]
+                },
                 "top_n": 50
             }
         }
@@ -52,13 +74,23 @@ async def get_recommendations(request: RecommendationRequest):
     Get complete trip recommendations with priority-scored POIs.
     """
     try:
-        # FIXED: Call the function directly (No .invoke, no config needed here)
+        # Convert UserBehavior model to dict if provided
+        user_behavior_dict = None
+        if request.user_behavior:
+            user_behavior_dict = {
+                "viewed_place_ids": request.user_behavior.viewed_place_ids,
+                "collected_place_ids": request.user_behavior.collected_place_ids,
+                "trip_place_ids": request.user_behavior.trip_place_ids
+            }
+        
+        # Call the function with behavioral signals
         result = recommend_pois_for_trip_logic(
             destination_state=request.destination_state,
             user_preferences=request.user_preferences,
             number_of_travelers=request.number_of_travelers,
             trip_duration_days=request.trip_duration_days,
             preferred_poi_names=request.preferred_poi_names,
+            user_behavior=user_behavior_dict,
             top_n=request.top_n
         )
         

@@ -52,10 +52,19 @@ def calculate_priority_scores(
     user_preferences: List[str],
     number_of_travelers: int,
     travel_days: int,
-    preferred_poi_names: Optional[List[str]] = None
+    preferred_poi_names: Optional[List[str]] = None,
+    user_behavior: Optional[Dict[str, List[str]]] = None
 ) -> List[Dict[str, Any]]:
     """
-    Calculate contextual priority scores based on user context.
+    Calculate contextual priority scores based on user context with optional behavioral signals.
+    
+    Args:
+        user_behavior: Optional dict with keys:
+            - viewed_place_ids: List of place_ids user viewed
+            - collected_place_ids: List of place_ids user bookmarked
+            - trip_place_ids: List of place_ids in user's saved trips
+    
+    Original description:
     
     Score Range: 0-200+ (unbounded, can exceed 100)
     - Base popularity score: 0-100
@@ -78,6 +87,11 @@ def calculate_priority_scores(
     Returns:
         List of POIs with priority_score field (sorted descending)
     """
+    # Extract behavioral signals (default to empty sets)
+    viewed_ids = set(user_behavior.get("viewed_place_ids", [])) if user_behavior else set()
+    collected_ids = set(user_behavior.get("collected_place_ids", [])) if user_behavior else set()
+    trip_ids = set(user_behavior.get("trip_place_ids", [])) if user_behavior else set()
+    
     scored_pois = []
     
     for poi in pois:
@@ -136,12 +150,37 @@ def calculate_priority_scores(
         if travel_days < 3 and wikidata_sitelinks >= 20:
             current_score *= 1.2
         
+        # Layer 4: Behavioral Boost (NEW)
+        behavior_boost = 0
+        behavior_multiplier = 1.0
+        
+        if user_behavior:
+            poi_place_id = poi.get("google_place_id")
+            
+            # Viewed: Weak signal (+3 points)
+            if poi_place_id in viewed_ids:
+                behavior_boost += 3
+            
+            # Collected: Medium signal (+20 points)
+            if poi_place_id in collected_ids:
+                behavior_boost += 20
+            
+            # In Saved Trips: Strong signal (×1.4 multiplier)
+            if poi_place_id in trip_ids:
+                behavior_multiplier = 1.4
+        
+        # Apply behavioral boosts
+        current_score += behavior_boost
+        current_score *= behavior_multiplier
+        
         # Keep raw score (no normalization) - matches old implementation
         priority_score = current_score
         
         scored_pois.append({
             **poi,
-            "priority_score": round(priority_score, 1)
+            "priority_score": round(priority_score, 2),
+            "behavior_boost": behavior_boost if user_behavior else 0,
+            "behavior_multiplier": behavior_multiplier if user_behavior else 1.0
         })
     
     scored_pois.sort(key=lambda x: x["priority_score"], reverse=True)
@@ -158,7 +197,9 @@ def get_top_priority_pois(scored_pois: List[Dict[str, Any]], top_n: int = 50) ->
             "priority_score": poi.get("priority_score"),
             "lat": poi.get("lat"),
             "lon": poi.get("lon"),
-            "state": poi.get("state")
+            "state": poi.get("state"),
+            "behavior_boost": poi.get("behavior_boost", 0),
+            "behavior_multiplier": poi.get("behavior_multiplier", 1.0)
         }
         for poi in top_pois
     ]
@@ -244,11 +285,18 @@ def recommend_pois_for_trip_logic(
     number_of_travelers: int,
     trip_duration_days: int,
     preferred_poi_names: Optional[List[str]] = None,
+    user_behavior: Optional[Dict[str, List[str]]] = None,
     top_n: int = 50
 ) -> Dict[str, Any]:
     """
     Orchestrator function that calls other internal functions.
     This replaces the tool-calling-tool pattern.
+    
+    Args:
+        user_behavior: Optional behavioral signals from Flutter app:
+            - viewed_place_ids: POIs user viewed
+            - collected_place_ids: POIs user bookmarked
+            - trip_place_ids: POIs in user's saved trips
     """
     # Step 1: Call internal logic (Public functions now)
     pois = load_pois_from_database(state=destination_state, golden_only=True, min_popularity=50)
@@ -269,7 +317,8 @@ def recommend_pois_for_trip_logic(
         user_preferences=user_preferences,
         number_of_travelers=number_of_travelers,
         travel_days=trip_duration_days,
-        preferred_poi_names=preferred_poi_names
+        preferred_poi_names=preferred_poi_names,
+        user_behavior=user_behavior
     )
     
     # Step 3: Call internal logic
@@ -286,6 +335,14 @@ def recommend_pois_for_trip_logic(
         activity_mix=activity_mix,
         user_preferences=user_preferences
     )
+    
+    # Add behavior stats to output (for transparency)
+    if user_behavior:
+        output["behavior_stats"] = {
+            "viewed_count": len(user_behavior.get("viewed_place_ids", [])),
+            "collected_count": len(user_behavior.get("collected_place_ids", [])),
+            "trip_count": len(user_behavior.get("trip_place_ids", []))
+        }
     
     return output
 
