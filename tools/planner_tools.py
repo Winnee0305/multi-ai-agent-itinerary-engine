@@ -262,14 +262,354 @@ def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> 
     return sequence
 
 
+def extract_coordinates(pois: List[Dict[str, Any]]) -> tuple:
+    """
+    Extract lat/lon coordinates from POI list.
+    Returns: (coords_array, poi_map)
+    """
+    import numpy as np
+    
+    coords = []
+    poi_map = {}
+    
+    for idx, poi in enumerate(pois):
+        lat = poi.get("lat")
+        lon = poi.get("lon")
+        
+        if lat is not None and lon is not None:
+            coords.append([lat, lon])
+            poi_map[idx] = poi
+    
+    return np.array(coords), poi_map
+
+
+def split_into_days_simple(
+    sequence: List[Dict[str, Any]],
+    trip_duration_days: int,
+    max_pois_per_day: int
+) -> List[Dict[str, Any]]:
+    """
+    Split sequence into daily chunks (simple equal distribution).
+    Fallback when k-means fails or for single-day trips.
+    """
+    daily_itineraries = []
+    
+    for day_num in range(1, trip_duration_days + 1):
+        start_idx = (day_num - 1) * max_pois_per_day
+        end_idx = start_idx + max_pois_per_day
+        
+        day_pois = sequence[start_idx:end_idx]
+        
+        if not day_pois:
+            # Empty day
+            daily_itineraries.append({
+                "day": day_num,
+                "pois": [],
+                "total_pois": 0,
+                "total_distance_meters": 0,
+                "message": "Flexible day - relax or revisit favorites"
+            })
+            continue
+        
+        # Renumber sequences within each day
+        for seq_num, poi in enumerate(day_pois, start=1):
+            poi["sequence_no"] = seq_num
+        
+        # Calculate total distance
+        total_distance = sum(
+            poi.get("distance_from_previous_meters", 0) 
+            for poi in day_pois
+        )
+        
+        daily_itineraries.append({
+            "day": day_num,
+            "pois": day_pois,
+            "total_pois": len(day_pois),
+            "total_distance_meters": round(total_distance, 2)
+        })
+    
+    return daily_itineraries
+
+
+def cluster_pois_kmeans(
+    pois: List[Dict[str, Any]],
+    n_clusters: int
+) -> Dict[int, List[Dict[str, Any]]]:
+    """
+    Cluster POIs geographically using K-Means.
+    
+    Args:
+        pois: List of POIs with lat/lon
+        n_clusters: Number of clusters (= trip_duration_days)
+    
+    Returns:
+        Dict mapping cluster_id to list of POIs
+    """
+    from sklearn.cluster import KMeans
+    import numpy as np
+    
+    if len(pois) < n_clusters:
+        # Not enough POIs for clustering
+        return {0: pois}  # Return all in one cluster
+    
+    # Extract coordinates
+    coords, poi_map = extract_coordinates(pois)
+    
+    if len(coords) == 0:
+        return {0: pois}
+    
+    # Run K-Means
+    kmeans = KMeans(
+        n_clusters=n_clusters,
+        random_state=42,
+        n_init=10
+    )
+    
+    cluster_labels = kmeans.fit_predict(coords)
+    
+    # Group POIs by cluster
+    clustered_pois = {i: [] for i in range(n_clusters)}
+    
+    for idx, cluster_id in enumerate(cluster_labels):
+        if idx in poi_map:
+            clustered_pois[cluster_id].append(poi_map[idx])
+    
+    return clustered_pois
+
+
+def order_clusters_by_proximity(
+    clustered_pois: Dict[int, List[Dict]],
+    start_cluster_id: int = 0
+) -> List[int]:
+    """
+    Order clusters to minimize overnight transitions.
+    Uses cluster centroids to determine order.
+    
+    Returns: Ordered list of cluster IDs
+    """
+    if len(clustered_pois) <= 1:
+        return list(clustered_pois.keys())
+    
+    # Calculate centroid for each cluster
+    centroids = {}
+    for cluster_id, pois in clustered_pois.items():
+        if not pois:
+            continue
+        avg_lat = sum(p.get("lat", 0) for p in pois) / len(pois)
+        avg_lon = sum(p.get("lon", 0) for p in pois) / len(pois)
+        centroids[cluster_id] = (avg_lat, avg_lon)
+    
+    # Greedy nearest cluster ordering
+    ordered = [start_cluster_id]
+    remaining = set(centroids.keys()) - {start_cluster_id}
+    
+    current_centroid = centroids[start_cluster_id]
+    
+    while remaining:
+        # Find nearest cluster
+        min_dist = float('inf')
+        nearest_cluster = None
+        
+        for cluster_id in remaining:
+            centroid = centroids[cluster_id]
+            dist = haversine_distance(
+                current_centroid[0], current_centroid[1],
+                centroid[0], centroid[1]
+            )
+            if dist < min_dist:
+                min_dist = dist
+                nearest_cluster = cluster_id
+        
+        if nearest_cluster is not None:
+            ordered.append(nearest_cluster)
+            remaining.remove(nearest_cluster)
+            current_centroid = centroids[nearest_cluster]
+        else:
+            break
+    
+    # Add any remaining clusters
+    ordered.extend(remaining)
+    
+    return ordered
+
+
+def sequence_pois_within_cluster(
+    pois: List[Dict[str, Any]],
+    start_poi: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Sequence POIs within a cluster using nearest neighbor.
+    Similar to generate_optimal_sequence but works with POI objects.
+    """
+    if not pois:
+        return []
+    
+    if start_poi is None:
+        start_poi = pois[0]
+    
+    sequence = [start_poi]
+    remaining = [p for p in pois if p != start_poi]
+    
+    sequence_no = 1
+    start_poi["sequence_no"] = sequence_no
+    start_poi["distance_from_previous_meters"] = 0
+    
+    current_poi = start_poi
+    
+    while remaining:
+        # Find nearest POI
+        min_dist = float('inf')
+        nearest_poi = None
+        
+        for poi in remaining:
+            dist = haversine_distance(
+                current_poi["lat"], current_poi["lon"],
+                poi["lat"], poi["lon"]
+            )
+            if dist < min_dist:
+                min_dist = dist
+                nearest_poi = poi
+        
+        if nearest_poi:
+            sequence_no += 1
+            nearest_poi["sequence_no"] = sequence_no
+            nearest_poi["distance_from_previous_meters"] = round(min_dist, 2)
+            sequence.append(nearest_poi)
+            remaining.remove(nearest_poi)
+            current_poi = nearest_poi
+        else:
+            break
+    
+    return sequence
+
+
+def split_into_days_kmeans(
+    sequence: List[Dict[str, Any]],
+    trip_duration_days: int,
+    max_pois_per_day: int
+) -> List[Dict[str, Any]]:
+    """
+    Split sequence into daily itineraries using K-Means geographic clustering.
+    
+    Algorithm:
+    1. Cluster POIs geographically into K groups (K = trip_duration_days)
+    2. Order clusters to minimize overnight transitions
+    3. Sequence POIs within each cluster using nearest neighbor
+    4. Balance cluster sizes if needed
+    """
+    if trip_duration_days == 1:
+        # Single day trip - no clustering needed
+        return split_into_days_simple(sequence, 1, max_pois_per_day)
+    
+    if len(sequence) < trip_duration_days:
+        # Not enough POIs for clustering
+        return split_into_days_simple(sequence, trip_duration_days, max_pois_per_day)
+    
+    try:
+        # Step 1: Cluster POIs
+        clustered_pois = cluster_pois_kmeans(sequence, trip_duration_days)
+        
+        # Step 2: Order clusters
+        ordered_cluster_ids = order_clusters_by_proximity(clustered_pois)
+        
+        # Step 3: Create daily itineraries
+        daily_itineraries = []
+        prev_day_end_poi = None
+        
+        for day_num, cluster_id in enumerate(ordered_cluster_ids, start=1):
+            cluster_pois = clustered_pois[cluster_id]
+            
+            if not cluster_pois:
+                daily_itineraries.append({
+                    "day": day_num,
+                    "pois": [],
+                    "total_pois": 0,
+                    "total_distance_meters": 0,
+                    "message": "Flexible day"
+                })
+                continue
+            
+            # Determine starting POI for this day
+            if prev_day_end_poi is not None:
+                # Find closest POI to previous day's end
+                min_dist = float('inf')
+                start_poi = cluster_pois[0]
+                
+                for poi in cluster_pois:
+                    dist = haversine_distance(
+                        prev_day_end_poi["lat"], prev_day_end_poi["lon"],
+                        poi["lat"], poi["lon"]
+                    )
+                    if dist < min_dist:
+                        min_dist = dist
+                        start_poi = poi
+            else:
+                start_poi = cluster_pois[0]
+            
+            # Sequence POIs within cluster
+            day_sequence = sequence_pois_within_cluster(cluster_pois, start_poi)
+            
+            # Limit to max_pois_per_day
+            day_sequence = day_sequence[:max_pois_per_day]
+            
+            # Calculate total distance
+            total_distance = sum(
+                poi.get("distance_from_previous_meters", 0)
+                for poi in day_sequence
+            )
+            
+            # Calculate overnight transition if not first day
+            overnight_transition = None
+            if prev_day_end_poi is not None and day_sequence:
+                transition_dist = haversine_distance(
+                    prev_day_end_poi["lat"], prev_day_end_poi["lon"],
+                    day_sequence[0]["lat"], day_sequence[0]["lon"]
+                )
+                overnight_transition = {
+                    "from_poi": prev_day_end_poi.get("google_matched_name") or prev_day_end_poi.get("name", "Unknown"),
+                    "to_poi": day_sequence[0].get("google_matched_name") or day_sequence[0].get("name", "Unknown"),
+                    "distance_meters": round(transition_dist, 2)
+                }
+            
+            daily_itineraries.append({
+                "day": day_num,
+                "pois": day_sequence,
+                "total_pois": len(day_sequence),
+                "total_distance_meters": round(total_distance, 2),
+                "overnight_transition": overnight_transition
+            })
+            
+            # Update for next iteration
+            if day_sequence:
+                prev_day_end_poi = day_sequence[-1]
+        
+        return daily_itineraries
+    
+    except Exception as e:
+        # Fallback to simple splitting if k-means fails
+        print(f"K-Means clustering failed: {e}. Falling back to simple split.")
+        return split_into_days_simple(sequence, trip_duration_days, max_pois_per_day)
+
+
 def plan_itinerary_logic(
     priority_pois: List[Dict[str, Any]],
+    trip_duration_days: int = 1,
     max_pois_per_day: int = 6,
-    max_distance_threshold: int = 30000
+    max_distance_threshold: int = 30000,
+    clustering_strategy: str = "kmeans"
 ) -> Dict[str, Any]:
     """
-    Orchestrator logic for planning.
-    Combines centroid selection, clustering, and sequencing.
+    Orchestrator logic for planning with multi-day support.
+    
+    Args:
+        priority_pois: List of POIs sorted by priority score
+        trip_duration_days: Number of days for the trip
+        max_pois_per_day: Maximum POIs to visit per day
+        max_distance_threshold: Distance threshold for clustering (meters)
+        clustering_strategy: "simple" | "kmeans" - Day splitting strategy
+    
+    Returns:
+        Dict with daily_itineraries, trip_summary, and metadata
     """
     # 1. Select Centroid
     centroid_info = select_best_centroid(priority_pois)
@@ -278,23 +618,47 @@ def plan_itinerary_logic(
         
     centroid_id = centroid_info["google_place_id"]
     
-    # 2. Cluster
+    # 2. Cluster by distance (nearby vs far)
     clusters = cluster_pois_by_distance(centroid_id, priority_pois, max_distance_threshold)
     
-    # 3. Sequence (Focus on 'nearby' cluster for now)
-    target_pois = [p["google_place_id"] for p in clusters["nearby"]]
+    # 3. Limit to realistic number of POIs
+    max_total_pois = trip_duration_days * max_pois_per_day
+    target_pois = [p["google_place_id"] for p in clusters["nearby"][:max_total_pois]]
     
-    # Remove centroid from target list to avoid duplication if it's in there
+    # Remove centroid from target list to avoid duplication
     if centroid_id in target_pois:
         target_pois.remove(centroid_id)
-        
+    
+    # 4. Generate initial sequence (nearest neighbor)
     sequence = generate_optimal_sequence(target_pois, centroid_id)
     
+    # 5. Split into daily itineraries
+    if clustering_strategy == "kmeans":
+        daily_itineraries = split_into_days_kmeans(
+            sequence, trip_duration_days, max_pois_per_day
+        )
+    else:  # "simple"
+        daily_itineraries = split_into_days_simple(
+            sequence, trip_duration_days, max_pois_per_day
+        )
+    
+    # 6. Calculate trip summary
+    total_pois = sum(day["total_pois"] for day in daily_itineraries)
+    total_distance = sum(day["total_distance_meters"] for day in daily_itineraries)
+    
     return {
+        "trip_duration_days": trip_duration_days,
         "centroid": centroid_info,
-        "clusters": clusters,
-        "optimized_sequence": sequence,
-        "total_pois": len(sequence)
+        "daily_itineraries": daily_itineraries,
+        "trip_summary": {
+            "total_pois": total_pois,
+            "total_days": trip_duration_days,
+            "total_distance_meters": round(total_distance, 2),
+            "avg_pois_per_day": round(total_pois / trip_duration_days, 1) if trip_duration_days > 0 else 0,
+            "avg_distance_per_day_meters": round(total_distance / trip_duration_days, 2) if trip_duration_days > 0 else 0
+        },
+        "clustering_strategy_used": clustering_strategy,
+        "clusters": clusters  # Keep for debugging
     }
 
 # ==============================================================================

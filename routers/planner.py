@@ -12,7 +12,8 @@ from tools.planner_tools import (
     cluster_pois_by_distance,
     generate_optimal_sequence,
     get_pois_near_centroid,
-    calculate_distance_between_pois
+    calculate_distance_between_pois,
+    plan_itinerary_logic
 )
 
 router = APIRouter(prefix="/planner", tags=["Planner"])
@@ -82,8 +83,10 @@ class GenerateSequenceRequest(BaseModel):
 class PlanItineraryRequest(BaseModel):
     """Complete itinerary planning request"""
     priority_pois: List[PriorityPOI] = Field(..., description="POIs sorted by priority score")
+    trip_duration_days: int = Field(default=1, ge=1, description="Number of days for the trip")
     max_pois_per_day: int = Field(default=6, description="Max POIs to visit per day")
     max_distance_meters: int = Field(default=30000, description="Clustering distance threshold")
+    clustering_strategy: str = Field(default="kmeans", description="Day splitting strategy: 'simple' or 'kmeans'")
     
     class Config:
         json_schema_extra = {
@@ -98,8 +101,10 @@ class PlanItineraryRequest(BaseModel):
                         "state": "Penang"
                     }
                 ],
+                "trip_duration_days": 3,
                 "max_pois_per_day": 6,
-                "max_distance_meters": 30000
+                "max_distance_meters": 30000,
+                "clustering_strategy": "kmeans"
             }
         }
 
@@ -230,83 +235,37 @@ async def generate_sequence_endpoint(request: GenerateSequenceRequest):
 @router.post("/plan-itinerary")
 async def plan_itinerary_endpoint(request: PlanItineraryRequest):
     """
-    Complete itinerary planning workflow:
-    1. Select centroid from top 5 priority POIs
-    2. Calculate distances to top 50 POIs
-    3. Cluster POIs (nearby vs far)
-    4. Generate optimal sequence for nearby POIs
+    Complete itinerary planning workflow with multi-day support:
+    1. Select centroid from top priority POIs
+    2. Cluster POIs by distance (nearby vs far)
+    3. Generate optimal sequence
+    4. Split into daily itineraries using k-means or simple strategy
     
-    Returns complete sequenced itinerary.
+    Returns complete multi-day sequenced itinerary.
     """
     try:
-
-        config = {"configurable": {"thread_id": "test-trip-001"}}
-
         priority_pois_list = [poi.model_dump() for poi in request.priority_pois]
         
-        # Step 1: Select centroid
-        centroid = select_best_centroid.invoke({
-            "top_priority_pois": priority_pois_list,
-            "consider_top_n": 5
-        }, config = config)
-        
-        centroid_place_id = centroid.get("google_place_id")
-        
-        # Step 2: Get top 50 POIs
-        top_50_pois = priority_pois_list[:50]
-        
-        # Step 3: Calculate distances
-        poi_place_ids = [poi.get("google_place_id") for poi in top_50_pois]
-        
-        distances = calculate_distances_from_centroid.invoke({
-            "centroid_place_id": centroid_place_id,
-            "poi_place_ids": poi_place_ids
-        }, config = config)
-        
-        # Step 4: Cluster POIs
-        clusters = cluster_pois_by_distance.invoke({
-            "centroid_place_id": centroid_place_id,
-            "poi_list": top_50_pois,
-            "max_distance_meters": request.max_distance_meters
-        }, config = config)
-        
-        nearby_pois = clusters.get("nearby", [])
-        
-        # Step 5: Select POIs to visit (exclude centroid, take max_pois_per_day - 1)
-        selected_place_ids = [
-            poi["google_place_id"] 
-            for poi in nearby_pois[:request.max_pois_per_day - 1]
-        ]
-        
-        # Step 6: Generate optimal sequence
-        sequence = generate_optimal_sequence.invoke({
-            "poi_place_ids": selected_place_ids,
-            "start_place_id": centroid_place_id
-        }, config = config)
-        
-        # Calculate total distance
-        total_distance = sum(
-            item.get("distance_from_previous_meters", 0) 
-            for item in sequence
+        # Call the orchestrator logic directly
+        result = plan_itinerary_logic(
+            priority_pois=priority_pois_list,
+            trip_duration_days=request.trip_duration_days,
+            max_pois_per_day=request.max_pois_per_day,
+            max_distance_threshold=request.max_distance_meters,
+            clustering_strategy=request.clustering_strategy
         )
+        
+        # Check for errors
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
         
         return {
             "success": True,
-            "centroid": centroid,
-            "sequence": sequence,
-            "clusters": {
-                "nearby_count": clusters.get("nearby_count", 0),
-                "far_count": clusters.get("far_count", 0)
-            },
-            "summary": {
-                "total_pois": len(sequence),
-                "total_distance_meters": total_distance,
-                "total_distance_km": round(total_distance / 1000, 2),
-                "pois_selected_from": len(priority_pois_list),
-                "pois_in_sequence": len(sequence)
-            }
+            **result
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error planning itinerary: {str(e)}")
 
