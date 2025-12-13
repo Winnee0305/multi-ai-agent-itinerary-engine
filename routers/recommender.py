@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from tools.recommender_tools import (
     load_pois_from_database,
     recommend_pois_for_trip_logic, # Note: This name changed in the refactor
+    get_quick_recommendations_for_you,
     INTEREST_CATEGORIES
 )
 
@@ -29,6 +30,32 @@ class UserBehavior(BaseModel):
                 "viewed_place_ids": ["ChIJabc123", "ChIJdef456"],
                 "collected_place_ids": ["ChIJghi789"],
                 "trip_place_ids": ["ChIJjkl012", "ChIJmno345"]
+            }
+        }
+
+
+class ForYouRequest(BaseModel):
+    """Request for 'For You' page recommendations"""
+    user_behavior: Optional[UserBehavior] = Field(
+        None, 
+        description="User behavioral data (optional - if None, returns trending POIs)"
+    )
+    top_n: int = Field(
+        default=5, 
+        ge=1, 
+        le=20, 
+        description="Number of recommendations to return"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_behavior": {
+                    "viewed_place_ids": ["ChIJabc123"],
+                    "collected_place_ids": ["ChIJdef456"],
+                    "trip_place_ids": ["ChIJghi789"]
+                },
+                "top_n": 5
             }
         }
 
@@ -172,3 +199,50 @@ async def get_interest_categories():
             for category, types in INTEREST_CATEGORIES.items()
         }
     }
+
+
+@router.post("/for-you")
+async def get_for_you_recommendations(request: ForYouRequest):
+    """
+    Get personalized 'For You' page recommendations.
+    
+    Features:
+    - Returns POIs with variety across refreshes
+    - Weighted random sampling from top 20 candidates
+    - Consistent within 6-hour rotation windows
+    - Personalized based on user behavior hash
+    
+    Returns:
+    - If user_behavior is provided: Personalized POIs based on behavioral signals
+    - If user_behavior is None/empty: Top trending golden POIs
+    
+    This is a lightweight endpoint optimized for fast app load times.
+    """
+    try:
+        # Convert UserBehavior to dict if provided, else None
+        user_behavior_dict = None
+        if request.user_behavior:
+            user_behavior_dict = {
+                "viewed_place_ids": request.user_behavior.viewed_place_ids,
+                "collected_place_ids": request.user_behavior.collected_place_ids,
+                "trip_place_ids": request.user_behavior.trip_place_ids
+            }
+        
+        # Call the logic function
+        recommendations = get_quick_recommendations_for_you(
+            user_behavior=user_behavior_dict,
+            top_n=request.top_n
+        )
+        
+        return {
+            "success": True,
+            "count": len(recommendations),
+            "is_personalized": user_behavior_dict is not None,
+            "recommendations": recommendations
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get recommendations: {str(e)}"
+        )

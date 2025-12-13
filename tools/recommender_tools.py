@@ -1,7 +1,9 @@
 """
 Tools for Recommender Agent - Load POIs and calculate priority scores
 """
-
+import random
+import hashlib
+from datetime import datetime
 from langchain_core.tools import StructuredTool
 from typing import List, Dict, Any, Optional
 from database.supabase_client import get_supabase
@@ -345,6 +347,200 @@ def recommend_pois_for_trip_logic(
         }
     
     return output
+
+
+def get_trending_pois_logic(limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Get trending POIs based on popularity score.
+    Used for "For You" page when user has no behavioral data.
+    
+    Args:
+        limit: Number of POIs to return (default 5)
+    
+    Returns:
+        List of top trending POIs
+    """
+    supabase = get_supabase()
+    
+    # Query top POIs by popularity
+    result = supabase.table("osm_pois").select(
+        "google_place_id, name, state, lat, lon, popularity_score, "
+        "google_rating, wikidata_sitelinks, google_types"
+    ).eq("in_golden_list", True).gte(
+        "popularity_score", 70
+    ).order("popularity_score", desc=True).limit(limit * 2).execute()  # Get 2x for variety
+    
+    if not result.data:
+        return []
+    
+    # Return top N with minimal formatting
+    pois = []
+    for poi in result.data[:limit]:
+        pois.append({
+            "google_place_id": poi.get("google_place_id"),
+            "name": poi.get("name"),
+            "state": poi.get("state"),
+            "lat": poi.get("lat"),
+            "lon": poi.get("lon"),
+            "popularity_score": poi.get("popularity_score"),
+            "google_rating": poi.get("google_rating")
+        })
+    
+    return pois
+
+
+def _generate_seed_for_recommendations(
+    user_behavior: Optional[Dict[str, List[str]]] = None,
+    rotation_hours: int = 6
+) -> int:
+    """
+    Generate deterministic seed based on time window and user behavior.
+    
+    Args:
+        user_behavior: Optional user signals for personalization
+        rotation_hours: Hours per rotation window (default 6)
+    
+    Returns:
+        Integer seed for random number generator
+    """
+    # Get current time window (rounds down to nearest rotation_hours)
+    now = datetime.utcnow()
+    time_window = now.replace(
+        hour=(now.hour // rotation_hours) * rotation_hours,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+    
+    # Create base seed from time window
+    time_seed = int(time_window.timestamp())
+    
+    # Add user behavior hash for personalization
+    if user_behavior:
+        behavior_str = "".join(sorted([
+            *user_behavior.get("viewed_place_ids", []),
+            *user_behavior.get("collected_place_ids", []),
+            *user_behavior.get("trip_place_ids", [])
+        ]))
+        if behavior_str:
+            behavior_hash = int(hashlib.md5(behavior_str.encode()).hexdigest()[:8], 16)
+            return time_seed + behavior_hash
+    
+    return time_seed
+
+
+def get_quick_recommendations_for_you(
+    user_behavior: Optional[Dict[str, List[str]]] = None,
+    top_n: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Fast personalized recommendations for "For You" page.
+    Uses simplified scoring focused on behavioral signals.
+    
+    **Randomness Strategy:**
+    - Samples from top 20 candidates using weighted random selection
+    - Scores used as weights (higher score = higher selection probability)
+    - Deterministic within 6-hour rotation windows
+    - Personalized per user behavior hash
+    
+    Args:
+        user_behavior: Optional behavioral signals (viewed, collected, trips)
+        top_n: Number of recommendations (default 5)
+    
+    Returns:
+        List of top N POIs with scores (varied across time windows)
+    """
+    supabase = get_supabase()
+    
+    # Load golden POIs with basic filtering (optimized query)
+    result = supabase.table("osm_pois").select(
+        "google_place_id, name, state, lat, lon, popularity_score, "
+        "google_rating, wikidata_sitelinks"
+    ).eq("in_golden_list", True).gte(
+        "popularity_score", 70
+    ).limit(100).execute()  # Only consider top 100 golden POIs for speed
+    
+    if not result.data:
+        return []
+    
+    pois = result.data
+    
+    # Extract behavioral signals
+    viewed_ids = set(user_behavior.get("viewed_place_ids", [])) if user_behavior else set()
+    collected_ids = set(user_behavior.get("collected_place_ids", [])) if user_behavior else set()
+    trip_ids = set(user_behavior.get("trip_place_ids", [])) if user_behavior else set()
+    
+    # Apply FAST scoring
+    scored_pois = []
+    
+    for poi in pois:
+        base_score = poi.get("popularity_score", 0)
+        poi_id = poi.get("google_place_id")
+        
+        # Start with base popularity
+        score = float(base_score)
+        
+        # Behavioral boost (HIGH WEIGHT for personalization)
+        if poi_id in trip_ids:
+            score *= 2.0  # Very strong signal - user actively used in trip
+        elif poi_id in collected_ids:
+            score *= 1.5  # Strong signal - user bookmarked
+        elif poi_id in viewed_ids:
+            score *= 1.2  # Medium signal - user showed interest
+        
+        # Quality boost
+        google_rating = poi.get("google_rating", 0)
+        if google_rating >= 4.5:
+            score *= 1.1
+        
+        scored_pois.append({
+            "google_place_id": poi_id,
+            "name": poi.get("name"),
+            "state": poi.get("state"),
+            "lat": poi.get("lat"),
+            "lon": poi.get("lon"),
+            "score": round(score, 2),
+            "popularity_score": base_score,
+            "google_rating": google_rating
+        })
+    
+    # Sort by score to identify top candidates
+    scored_pois.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Get top 20 candidates for sampling pool (or all if fewer)
+    candidate_pool_size = min(20, len(scored_pois))
+    candidates = scored_pois[:candidate_pool_size]
+    
+    # If we have fewer candidates than requested, return all
+    if len(candidates) <= top_n:
+        return candidates
+    
+    # Extract scores for weighted sampling
+    scores = [poi["score"] for poi in candidates]
+    
+    # Generate seed for deterministic randomness
+    seed = _generate_seed_for_recommendations(user_behavior, rotation_hours=6)
+    random.seed(seed)
+    
+    # Weighted random sampling (higher scores = higher probability)
+    selected_pois = random.choices(
+        candidates,
+        weights=scores,
+        k=top_n
+    )
+    
+    # Reset random seed to avoid affecting other code
+    random.seed()
+    
+    # Remove duplicates while preserving order (edge case)
+    seen = set()
+    unique_selected = []
+    for poi in selected_pois:
+        if poi["google_place_id"] not in seen:
+            seen.add(poi["google_place_id"])
+            unique_selected.append(poi)
+    
+    return unique_selected
 
 # ==============================================================================
 # 2. EXPORTED TOOLS (Wrappers)
