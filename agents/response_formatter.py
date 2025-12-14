@@ -49,52 +49,47 @@ def create_response_formatter_node(model=None):
         itinerary = state.get("itinerary", {})
         centroid = state.get("centroid", {})
         
-        # Build response parts
+        # Build response parts (chatbot-friendly formatting)
         response_parts = []
         
         # === TRIP OVERVIEW ===
-        response_parts.append("=" * 60)
-        response_parts.append(f"🌏 TRIP TO {destination_state.upper()}")
-        response_parts.append("=" * 60)
-        response_parts.append(f"📅 Duration: {trip_duration_days} days")
-        response_parts.append(f"👥 Travelers: {num_travelers}")
+        response_parts.append(f"## 🌏 Trip to {destination_state}")
+        response_parts.append("")
+        response_parts.append(f"**Duration:** {trip_duration_days} days")
+        response_parts.append(f"**Travelers:** {num_travelers} people")
         
         if user_preferences:
             preferences_str = ", ".join(user_preferences)
-            response_parts.append(f"❤️  Interests: {preferences_str}")
+            response_parts.append(f"**Interests:** {preferences_str}")
         
         response_parts.append("")
         
         # === TOP RECOMMENDATIONS ===
         if top_priority_pois:
-            response_parts.append("=" * 60)
-            response_parts.append(f"⭐ TOP {len(top_priority_pois)} RECOMMENDED POIs")
-            response_parts.append("=" * 60)
+            response_parts.append(f"### ⭐ Top {min(10, len(top_priority_pois))} Recommended Places")
+            response_parts.append("")
             
-            # Show top 10 with scores
+            # Show top 10 in clean numbered list
             for i, poi in enumerate(top_priority_pois[:10], 1):
                 name = poi.get("name", "Unknown")
                 score = poi.get("priority_score", 0)
-                response_parts.append(f"{i:2d}. {name} (Priority: {score:.2f})")
+                response_parts.append(f"{i}. **{name}** • Priority: {score:.0f}")
             
             if len(top_priority_pois) > 10:
-                response_parts.append(f"    ... and {len(top_priority_pois) - 10} more POIs")
+                response_parts.append(f"\n*...and {len(top_priority_pois) - 10} more great places to explore!*")
             
             response_parts.append("")
         
         # === ACTIVITY MIX ===
         if activity_mix:
-            response_parts.append("=" * 60)
-            response_parts.append("🎯 RECOMMENDED ACTIVITY MIX")
-            response_parts.append("=" * 60)
+            response_parts.append("### 🎯 Activity Breakdown")
+            response_parts.append("")
             
-            # Sort by percentage
+            # Sort by percentage and show top 5
             sorted_activities = sorted(activity_mix.items(), key=lambda x: x[1], reverse=True)
             
-            for category, percentage in sorted_activities:
-                bar_length = int(percentage * 40)  # Scale to 40 chars max
-                bar = "█" * bar_length
-                response_parts.append(f"{category.capitalize():15s} {bar} {percentage*100:5.1f}%")
+            for category, percentage in sorted_activities[:5]:
+                response_parts.append(f"• **{category.capitalize()}**: {percentage*100:.0f}%")
             
             response_parts.append("")
         
@@ -103,13 +98,13 @@ def create_response_formatter_node(model=None):
             daily_itinerary = itinerary["daily_itinerary"]
             total_distance_km = itinerary.get("total_distance_km", 0)
             
-            response_parts.append("=" * 60)
-            response_parts.append(f"🗓️  {trip_duration_days}-DAY ITINERARY (Total: {total_distance_km:.1f} km)")
-            response_parts.append("=" * 60)
+            response_parts.append(f"### 🗓️ Your {trip_duration_days}-Day Itinerary")
+            response_parts.append(f"*Total travel distance: {total_distance_km:.1f} km*")
+            response_parts.append("")
             
             # Starting point
             if centroid:
-                response_parts.append(f"📍 Starting Point: {centroid.get('name', 'Unknown')}")
+                response_parts.append(f"📍 **Starting from:** {centroid.get('name', 'Unknown')}")
                 response_parts.append("")
             
             # Each day
@@ -118,7 +113,7 @@ def create_response_formatter_node(model=None):
                 pois = day_plan.get("pois", [])
                 day_distance_km = day_plan.get("total_distance_km", 0)
                 
-                response_parts.append(f"--- DAY {day_num} ({len(pois)} POIs, {day_distance_km:.1f} km) ---")
+                response_parts.append(f"**Day {day_num}** • {len(pois)} stops • {day_distance_km:.1f} km")
                 
                 for poi in pois:
                     seq_no = poi.get("sequence_no", 0)
@@ -127,24 +122,22 @@ def create_response_formatter_node(model=None):
                     distance_km = distance_m / 1000
                     
                     if seq_no == 1:
-                        response_parts.append(f"  {seq_no}. {name} (START)")
+                        response_parts.append(f"{seq_no}. {name}")
                     else:
-                        response_parts.append(f"  {seq_no}. {name} (+{distance_km:.1f} km)")
+                        response_parts.append(f"{seq_no}. {name} *(+{distance_km:.1f} km)*")
                 
                 response_parts.append("")
         
         # === SUMMARY ===
         if recommendations.get("summary_reasoning"):
-            response_parts.append("=" * 60)
-            response_parts.append("💡 PLANNING INSIGHTS")
-            response_parts.append("=" * 60)
+            response_parts.append("### 💡 Planning Notes")
+            response_parts.append("")
             response_parts.append(recommendations["summary_reasoning"])
             response_parts.append("")
         
         # Final note
-        response_parts.append("=" * 60)
-        response_parts.append("✅ Trip planning complete! Safe travels!")
-        response_parts.append("=" * 60)
+        response_parts.append("---")
+        response_parts.append("✅ Your itinerary is ready! Have an amazing trip! 🎉")
         
         # Join all parts
         formatted_response = "\n".join(response_parts)

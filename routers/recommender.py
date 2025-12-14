@@ -51,9 +51,9 @@ class ForYouRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "user_behavior": {
-                    "viewed_place_ids": ["ChIJabc123"],
-                    "collected_place_ids": ["ChIJdef456"],
-                    "trip_place_ids": ["ChIJghi789"]
+                    "viewed_place_ids": ["ChIJ-UZrLrM1zDERJKid4cjiTbI"],
+                    "collected_place_ids": ["ChIJ-UZrLrM1zDERJKid4cjiTbI"],
+                    "trip_place_ids": ["ChIJ-UZrLrM1zDERJKid4cjiTbI"]
                 },
                 "top_n": 5
             }

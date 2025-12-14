@@ -290,17 +290,10 @@ def get_top_priority_pois(scored_pois: List[Dict[str, Any]], top_n: int = 50) ->
     ]
 
 
-def calculate_activity_mix(top_pois: List[Dict[str, Any]], scored_pois: List[Dict[str, Any]]) -> Dict[str, float]:
-    """Internal logic to calculate mix."""
-    top_place_ids = {poi["google_place_id"] for poi in top_pois}
-    
-    top_pois_full = [
-        poi for poi in scored_pois 
-        if poi.get("google_place_id") in top_place_ids
-    ]
-    
+def calculate_activity_mix(scored_pois: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Internal logic to calculate mix from all scored POIs."""
     category_counts = {k.lower(): 0 for k in INTEREST_CATEGORIES.keys()}
-    total = len(top_pois_full)
+    total = len(scored_pois)
     
     if total == 0:
         return category_counts
@@ -308,7 +301,7 @@ def calculate_activity_mix(top_pois: List[Dict[str, Any]], scored_pois: List[Dic
     # Map categories based on INTEREST_CATEGORIES keys
     category_mapping = {k: k.lower() for k in INTEREST_CATEGORIES.keys()}
     
-    for poi in top_pois_full:
+    for poi in scored_pois:
         google_types = poi.get("google_types") or []
         
         for cat_name, cat_key in category_mapping.items():
@@ -332,18 +325,18 @@ def calculate_activity_mix(top_pois: List[Dict[str, Any]], scored_pois: List[Dic
 def generate_recommendation_output(
     destination_state: str,
     trip_duration_days: int,
-    top_priority_pois: List[Dict[str, Any]],
+    all_priority_pois: List[Dict[str, Any]],
     activity_mix: Dict[str, float],
     user_preferences: List[str]
 ) -> Dict[str, Any]:
-    """Internal logic to format output."""
+    """Internal logic to format output with all scored POIs."""
     preferences_str = ", ".join([p.lower() for p in user_preferences])
     top_categories = list(activity_mix.keys())[:3]
     categories_str = ", ".join(top_categories)
     
     summary = f"Prioritized based on user preferences for {preferences_str}. "
     summary += f"Recommended activity mix focuses on {categories_str}. "
-    summary += f"Selected {len(top_priority_pois)} POIs optimized for {trip_duration_days}-day trip."
+    summary += f"Selected {len(all_priority_pois)} POIs optimized for {trip_duration_days}-day trip."
     
     return {
         "destination_state": destination_state,
@@ -356,9 +349,9 @@ def generate_recommendation_output(
                 "lat": poi.get("lat"),
                 "lon": poi.get("lon"),
                 "state": poi.get("state"),
-                "is_preferred": poi.get("is_preferred", False)  # FIXED: Include preferred flag
+                "is_preferred": poi.get("is_preferred", False)
             }
-            for poi in top_priority_pois
+            for poi in all_priority_pois
         ],
         "recommended_activity_mix": activity_mix,
         "summary_reasoning": summary
@@ -371,12 +364,11 @@ def recommend_pois_for_trip_logic(
     number_of_travelers: int,
     trip_duration_days: int,
     preferred_poi_names: Optional[List[str]] = None,
-    user_behavior: Optional[Dict[str, List[str]]] = None,
-    top_n: int = 50
+    user_behavior: Optional[Dict[str, List[str]]] = None
 ) -> Dict[str, Any]:
     """
     Orchestrator function that calls other internal functions.
-    This replaces the tool-calling-tool pattern.
+    Returns ALL scored POIs without limiting to top N.
     
     Args:
         user_behavior: Optional behavioral signals from Flutter app:
@@ -407,17 +399,14 @@ def recommend_pois_for_trip_logic(
         user_behavior=user_behavior
     )
     
-    # Step 3: Get top N priority POIs
-    top_pois = get_top_priority_pois(scored_pois=scored_pois, top_n=top_n)
+    # Step 3: Calculate activity mix from all scored POIs
+    activity_mix = calculate_activity_mix(scored_pois=scored_pois)
     
-    # Step 4: Calculate activity mix
-    activity_mix = calculate_activity_mix(top_pois=top_pois, scored_pois=scored_pois)
-    
-    # Step 5: Generate formatted output
+    # Step 4: Generate formatted output with all POIs
     output = generate_recommendation_output(
         destination_state=destination_state,
         trip_duration_days=trip_duration_days,
-        top_priority_pois=top_pois,
+        all_priority_pois=scored_pois,
         activity_mix=activity_mix,
         user_preferences=user_preferences
     )
@@ -540,8 +529,8 @@ def get_quick_recommendations_for_you(
     result = supabase.table("osm_pois").select(
         "google_place_id, name, state, lat, lon, popularity_score, "
         "google_rating, wikidata_sitelinks"
-    ).eq("in_golden_list", True).gte(
-        "popularity_score", 70
+    ).eq("in_golden_list", True).filter(
+        "popularity_score", "gte", 70
     ).limit(100).execute()  # Only consider top 100 golden POIs for speed
     
     if not result.data:
@@ -561,6 +550,10 @@ def get_quick_recommendations_for_you(
         base_score = poi.get("popularity_score", 0)
         poi_id = poi.get("google_place_id")
         
+        # Skip POIs with NULL or invalid popularity scores
+        if base_score is None or base_score == 0:
+            continue
+        
         # Start with base popularity
         score = float(base_score)
         
@@ -572,9 +565,9 @@ def get_quick_recommendations_for_you(
         elif poi_id in viewed_ids:
             score *= 1.2  # Medium signal - user showed interest
         
-        # Quality boost
+        # Quality boost (handle NULL google_rating)
         google_rating = poi.get("google_rating", 0)
-        if google_rating >= 4.5:
+        if google_rating and google_rating >= 4.5:
             score *= 1.1
         
         scored_pois.append({

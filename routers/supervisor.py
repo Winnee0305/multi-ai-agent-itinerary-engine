@@ -182,10 +182,6 @@ async def plan_trip(request: TripPlanningRequest):
         # Get simple graph (without formatting for API)
         graph = get_graph_simple()
         
-        # Calculate POI limit based on trip duration (need buffer for randomization)
-        # Formula: days * 6 POIs/day * 2 (for selection variety) = days * 12
-        num_pois = max(50, request.trip_duration_days * 12)
-        
         # FIXED: For structured API requests, populate state directly instead of using LLM parser
         # This ensures preferred_poi_names are not lost in LLM translation
         initial_state = {
@@ -195,7 +191,6 @@ async def plan_trip(request: TripPlanningRequest):
             "num_travelers": request.number_of_travelers,
             "trip_duration_days": request.trip_duration_days,
             "preferred_pois": request.preferred_poi_names,  # Direct mapping - no LLM parsing needed
-            "num_pois": num_pois,
             "max_pois_per_day": request.max_pois_per_day,
             "next_step": "recommend"  # Skip input parser, go straight to recommender
         }
@@ -256,10 +251,6 @@ async def plan_trip_mobile(request: TripPlanningRequest):
         # Get simple graph (without formatting for API)
         graph = get_graph_simple()
         
-        # Calculate POI limit based on trip duration (need buffer for randomization)
-        # Formula: days * 6 POIs/day * 2 (for selection variety) = days * 12
-        num_pois = max(50, request.trip_duration_days * 12)
-        
         # FIXED: For structured API requests, populate state directly instead of using LLM parser
         # This ensures preferred_poi_names are not lost in LLM translation
         initial_state = {
@@ -269,7 +260,6 @@ async def plan_trip_mobile(request: TripPlanningRequest):
             "num_travelers": request.number_of_travelers,
             "trip_duration_days": request.trip_duration_days,
             "preferred_pois": request.preferred_poi_names,  # Direct mapping - no LLM parsing needed
-            "num_pois": num_pois,
             "max_pois_per_day": request.max_pois_per_day,
             "next_step": "recommend"  # Skip input parser, go straight to recommender
         }

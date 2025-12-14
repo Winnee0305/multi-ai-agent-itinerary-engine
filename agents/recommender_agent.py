@@ -44,11 +44,6 @@ def create_recommender_node(model=None):
         trip_duration_days = state.get("trip_duration_days", 3)
         preferred_pois = state.get("preferred_pois")
         
-        # Calculate POI limit based on trip duration (need buffer for randomization)
-        # Formula: days * 6 POIs/day * 2 (for selection variety) = days * 12
-        default_num_pois = max(50, trip_duration_days * 12)
-        num_pois = state.get("num_pois", default_num_pois)
-        
         # Validate required fields
         if not destination_state:
             return {
@@ -59,13 +54,13 @@ def create_recommender_node(model=None):
         
         try:
             # Call the recommendation logic directly (no agent needed)
+            # Returns ALL scored POIs without limiting
             recommendations = recommend_pois_for_trip_logic(
                 destination_state=destination_state,
                 user_preferences=user_preferences,
                 number_of_travelers=num_travelers,
                 trip_duration_days=trip_duration_days,
-                preferred_poi_names=preferred_pois,
-                top_n=num_pois
+                preferred_poi_names=preferred_pois
             )
             
             # Check for errors
