@@ -6,6 +6,8 @@ from langchain_core.tools import StructuredTool
 from typing import List, Dict, Any, Optional
 from database.supabase_client import get_supabase
 import math
+import random
+from datetime import datetime
 
 # ==============================================================================
 # 1. HELPER FUNCTIONS (Pure Python)
@@ -27,6 +29,26 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     
     return R * c
+
+def _generate_seed_for_sequencing(rotation_hours: int = 6) -> int:
+    """
+    Generate a deterministic seed based on time windows for sequence randomization.
+    Same seed within rotation_hours window for consistency, changes after.
+    
+    Args:
+        rotation_hours: Duration of time window in hours (default 6)
+        
+    Returns:
+        Integer seed for random number generation
+    """
+    now = datetime.utcnow()
+    time_window = now.replace(
+        hour=(now.hour // rotation_hours) * rotation_hours,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+    return int(time_window.timestamp())
 
 # ==============================================================================
 # 2. CORE LOGIC (Public Functions - No Decorators)
@@ -271,13 +293,15 @@ def sequence_pois_within_cluster(
 ) -> List[Dict[str, Any]]:
     """
     Sequence POIs within a cluster using nearest neighbor.
-    Similar to generate_optimal_sequence but works with POI objects.
+    Randomly selects start point for variety (different on every generation).
     """
     if not pois:
         return []
     
     if start_poi is None:
-        start_poi = pois[0]
+        # Randomly select starting POI (unique each time)
+        start_idx = random.randint(0, len(pois) - 1)
+        start_poi = pois[start_idx]
     
     sequence = [start_poi]
     remaining = [p for p in pois if p != start_poi]
@@ -463,6 +487,10 @@ def fill_days_with_nearby_pois(
     daily_pois = {}
     used_pois = set()
     
+    # Calculate total capacity needed across all days
+    total_days = len(day_assignments)
+    total_capacity_needed = sum(d["capacity"] for d in day_assignments.values())
+    
     for day_num in sorted(day_assignments.keys()):
         day_info = day_assignments[day_num]
         anchors = day_info["anchors"]
@@ -514,8 +542,27 @@ def fill_days_with_nearby_pois(
             # Sort by priority (higher is better)
             candidates.sort(key=lambda x: x["priority"], reverse=True)
             
+            # Calculate remaining days and adjust selection strategy
+            remaining_days = total_days - day_num + 1
+            remaining_unused = len([p for p in regular_pois if p["google_place_id"] not in used_pois])
+            
+            # If running low on POIs, be more conservative with selection
+            if remaining_unused < remaining_days * 3:  # Less than 3 POIs per remaining day
+                # Take top priority POIs deterministically to ensure coverage
+                selected = candidates[:capacity]
+            else:
+                # Randomly select from top candidates for variety
+                # Take from top 2x capacity (or all if fewer available)
+                top_candidates = candidates[:min(len(candidates), capacity * 2)]
+                
+                # Randomly sample 'capacity' POIs from top candidates
+                if len(top_candidates) > capacity:
+                    selected = random.sample(top_candidates, capacity)
+                else:
+                    selected = top_candidates
+            
             # Fill remaining slots
-            for candidate in candidates[:capacity]:
+            for candidate in selected:
                 day_pois.append(candidate["poi"])
                 used_pois.add(candidate["poi"]["google_place_id"])
         
@@ -554,20 +601,9 @@ def sequence_daily_pois(
             })
             continue
         
-        # Find best starting POI
-        if prev_day_last_poi and pois:
-            # Start with POI closest to previous day's end
-            start_poi = min(
-                pois,
-                key=lambda p: haversine_distance(
-                    prev_day_last_poi["lat"], prev_day_last_poi["lon"],
-                    p["lat"], p["lon"]
-                )
-            )
-        else:
-            # Start with highest priority POI (or first anchor)
-            anchors = [p for p in pois if p.get("is_preferred", False)]
-            start_poi = anchors[0] if anchors else max(pois, key=lambda p: p.get("priority_score", 0))
+        # Use random start point for variety
+        # Allow random selection from all POIs for maximum variety
+        start_poi = None
         
         # Sequence using nearest neighbor
         sequenced = sequence_pois_within_cluster(pois, start_poi)

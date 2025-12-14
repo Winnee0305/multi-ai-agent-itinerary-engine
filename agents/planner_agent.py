@@ -42,6 +42,7 @@ def create_planner_node(model=None):
         # Extract data from state
         top_priority_pois = state.get("top_priority_pois", [])
         trip_duration_days = state.get("trip_duration_days", 3)
+        max_pois_per_day = state.get("max_pois_per_day", 6)  # Get from state or default to 6
         
         # Validate inputs
         if not top_priority_pois:
@@ -56,7 +57,7 @@ def create_planner_node(model=None):
             result = plan_itinerary_logic(
                 priority_pois=top_priority_pois,
                 trip_duration_days=trip_duration_days,
-                max_pois_per_day=5,
+                max_pois_per_day=max_pois_per_day,
                 anchor_proximity_threshold=30000,  # 30km to group preferred POIs
                 poi_search_radius=50000  # 50km to search for nearby POIs
             )

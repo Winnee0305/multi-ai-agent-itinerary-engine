@@ -60,6 +60,10 @@ def calculate_priority_scores(
     """
     Calculate contextual priority scores based on user context with optional behavioral signals.
     
+    NEW: When preferred_poi_names are specified, POIs are geographically filtered to only include
+    those within 50km of the preferred POI region. This prevents "Cameron Highlands" searches from
+    returning far-away "Genting Highlands" results.
+    
     Args:
         user_behavior: Optional dict with keys:
             - viewed_place_ids: List of place_ids user viewed
@@ -89,6 +93,78 @@ def calculate_priority_scores(
     Returns:
         List of POIs with priority_score field (sorted descending)
     """
+    # Geographic filtering: If user specifies preferred POIs, scope results to that region
+    if preferred_poi_names:
+        from tools.planner_tools import haversine_distance
+        
+        # Find matching preferred POIs using fuzzy matching
+        try:
+            from fuzzywuzzy import fuzz
+            use_fuzzy = True
+        except ImportError:
+            use_fuzzy = False
+        
+        preferred_pois = []
+        threshold = 60
+        
+        for poi in pois:
+            poi_name = poi.get("name", "")
+            
+            if use_fuzzy:
+                max_similarity = 0
+                for preferred in preferred_poi_names:
+                    similarity = fuzz.ratio(poi_name.lower(), preferred.lower())
+                    if similarity > max_similarity:
+                        max_similarity = similarity
+                
+                if max_similarity >= threshold:
+                    preferred_pois.append(poi)
+            else:
+                for preferred in preferred_poi_names:
+                    if preferred.lower() in poi_name.lower() or poi_name.lower() in preferred.lower():
+                        preferred_pois.append(poi)
+                        break
+        
+        # If preferred POIs found, filter by geographic proximity
+        if preferred_pois:
+            centroid_lat = sum(p["lat"] for p in preferred_pois) / len(preferred_pois)
+            centroid_lon = sum(p["lon"] for p in preferred_pois) / len(preferred_pois)
+            
+            # Filter to 50km radius (expand to 80km if too few results)
+            radius_meters = 50000
+            filtered_pois = []
+            
+            for poi in pois:
+                distance = haversine_distance(
+                    centroid_lat, centroid_lon,
+                    poi["lat"], poi["lon"]
+                )
+                if distance <= radius_meters:
+                    filtered_pois.append(poi)
+            
+            # Always include preferred POIs themselves
+            for pref_poi in preferred_pois:
+                if pref_poi not in filtered_pois:
+                    filtered_pois.append(pref_poi)
+            
+            # If too few results, expand radius
+            if len(filtered_pois) < 20:
+                filtered_pois = []
+                radius_meters = 80000
+                for poi in pois:
+                    distance = haversine_distance(
+                        centroid_lat, centroid_lon,
+                        poi["lat"], poi["lon"]
+                    )
+                    if distance <= radius_meters:
+                        filtered_pois.append(poi)
+                
+                for pref_poi in preferred_pois:
+                    if pref_poi not in filtered_pois:
+                        filtered_pois.append(pref_poi)
+            
+            pois = filtered_pois  # Use filtered POIs for scoring
+    
     # Extract behavioral signals (default to empty sets)
     viewed_ids = set(user_behavior.get("viewed_place_ids", [])) if user_behavior else set()
     collected_ids = set(user_behavior.get("collected_place_ids", [])) if user_behavior else set()
@@ -308,7 +384,7 @@ def recommend_pois_for_trip_logic(
             - collected_place_ids: POIs user bookmarked
             - trip_place_ids: POIs in user's saved trips
     """
-    # Step 1: Call internal logic (Public functions now)
+    # Step 1: Load all POIs from state
     pois = load_pois_from_database(state=destination_state, golden_only=True, min_popularity=50)
     
     if not pois:
@@ -321,7 +397,7 @@ def recommend_pois_for_trip_logic(
             "summary_reasoning": "No POIs available for this destination."
         }
     
-    # Step 2: Call internal logic
+    # Step 2: Calculate priority scores (includes geographic filtering + fuzzy matching for preferred POIs)
     scored_pois = calculate_priority_scores(
         pois=pois,
         user_preferences=user_preferences,
@@ -331,13 +407,13 @@ def recommend_pois_for_trip_logic(
         user_behavior=user_behavior
     )
     
-    # Step 3: Call internal logic
+    # Step 3: Get top N priority POIs
     top_pois = get_top_priority_pois(scored_pois=scored_pois, top_n=top_n)
     
-    # Step 4: Call internal logic
+    # Step 4: Calculate activity mix
     activity_mix = calculate_activity_mix(top_pois=top_pois, scored_pois=scored_pois)
     
-    # Step 5: Call internal logic
+    # Step 5: Generate formatted output
     output = generate_recommendation_output(
         destination_state=destination_state,
         trip_duration_days=trip_duration_days,
@@ -346,7 +422,7 @@ def recommend_pois_for_trip_logic(
         user_preferences=user_preferences
     )
     
-    # Add behavior stats to output (for transparency)
+    # Step 6: Add behavior stats to output (for transparency)
     if user_behavior:
         output["behavior_stats"] = {
             "viewed_count": len(user_behavior.get("viewed_place_ids", [])),

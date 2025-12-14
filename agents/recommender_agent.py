@@ -43,7 +43,11 @@ def create_recommender_node(model=None):
         num_travelers = state.get("num_travelers", 2)
         trip_duration_days = state.get("trip_duration_days", 3)
         preferred_pois = state.get("preferred_pois")
-        num_pois = state.get("num_pois", 50)
+        
+        # Calculate POI limit based on trip duration (need buffer for randomization)
+        # Formula: days * 6 POIs/day * 2 (for selection variety) = days * 12
+        default_num_pois = max(50, trip_duration_days * 12)
+        num_pois = state.get("num_pois", default_num_pois)
         
         # Validate required fields
         if not destination_state:
