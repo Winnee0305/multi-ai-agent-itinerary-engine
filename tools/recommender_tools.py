@@ -111,21 +111,26 @@ def calculate_priority_scores(
         current_score = float(base_score)
         
         # Layer 0: Preferred POI Boost
+        is_preferred = False  # Track if this POI was explicitly requested by user
         if preferred_poi_names:
             try:
                 from fuzzywuzzy import fuzz
                 max_similarity = 0
+                best_match = None
                 for preferred in preferred_poi_names:
                     similarity = fuzz.ratio(poi_name.lower(), preferred.lower())
                     if similarity > max_similarity:
                         max_similarity = similarity
+                        best_match = preferred
                 
-                if max_similarity >= 80:
+                if max_similarity >= 60:
                     current_score *= 2.0
+                    is_preferred = True
             except ImportError:
                 for preferred in preferred_poi_names:
                     if preferred.lower() in poi_name.lower() or poi_name.lower() in preferred.lower():
                         current_score *= 2.0
+                        is_preferred = True
                         break
         
         # Layer 1: Interest Match Boost
@@ -181,6 +186,7 @@ def calculate_priority_scores(
         scored_pois.append({
             **poi,
             "priority_score": round(priority_score, 2),
+            "is_preferred": is_preferred,
             "behavior_boost": behavior_boost if user_behavior else 0,
             "behavior_multiplier": behavior_multiplier if user_behavior else 1.0
         })
@@ -200,6 +206,7 @@ def get_top_priority_pois(scored_pois: List[Dict[str, Any]], top_n: int = 50) ->
             "lat": poi.get("lat"),
             "lon": poi.get("lon"),
             "state": poi.get("state"),
+            "is_preferred": poi.get("is_preferred", False),
             "behavior_boost": poi.get("behavior_boost", 0),
             "behavior_multiplier": poi.get("behavior_multiplier", 1.0)
         }
@@ -272,7 +279,8 @@ def generate_recommendation_output(
                 "priority_score": poi["priority_score"],
                 "lat": poi.get("lat"),
                 "lon": poi.get("lon"),
-                "state": poi.get("state")
+                "state": poi.get("state"),
+                "is_preferred": poi.get("is_preferred", False)  # FIXED: Include preferred flag
             }
             for poi in top_priority_pois
         ],

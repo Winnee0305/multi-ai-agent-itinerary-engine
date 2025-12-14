@@ -28,6 +28,7 @@ class PriorityPOI(BaseModel):
     lat: float
     lon: float
     state: Optional[str] = None
+    is_preferred: bool = Field(default=False, description="User explicitly wants to visit this POI")
 
 
 class SelectCentroidRequest(BaseModel):
@@ -85,8 +86,8 @@ class PlanItineraryRequest(BaseModel):
     priority_pois: List[PriorityPOI] = Field(..., description="POIs sorted by priority score")
     trip_duration_days: int = Field(default=1, ge=1, description="Number of days for the trip")
     max_pois_per_day: int = Field(default=6, description="Max POIs to visit per day")
-    max_distance_meters: int = Field(default=30000, description="Clustering distance threshold")
-    clustering_strategy: str = Field(default="kmeans", description="Day splitting strategy: 'simple' or 'kmeans'")
+    anchor_proximity_threshold: int = Field(default=30000, description="Distance to group preferred POIs (meters)")
+    poi_search_radius: int = Field(default=50000, description="Max distance to search for nearby POIs (meters)")
     
     class Config:
         json_schema_extra = {
@@ -98,13 +99,14 @@ class PlanItineraryRequest(BaseModel):
                         "priority_score": 95.5,
                         "lat": 5.4164,
                         "lon": 100.3327,
-                        "state": "Penang"
+                        "state": "Penang",
+                        "is_preferred": True
                     }
                 ],
                 "trip_duration_days": 3,
                 "max_pois_per_day": 6,
-                "max_distance_meters": 30000,
-                "clustering_strategy": "kmeans"
+                "anchor_proximity_threshold": 30000,
+                "poi_search_radius": 50000
             }
         }
 
@@ -235,24 +237,25 @@ async def generate_sequence_endpoint(request: GenerateSequenceRequest):
 @router.post("/plan-itinerary")
 async def plan_itinerary_endpoint(request: PlanItineraryRequest):
     """
-    Complete itinerary planning workflow with multi-day support:
-    1. Select centroid from top priority POIs
-    2. Cluster POIs by distance (nearby vs far)
-    3. Generate optimal sequence
-    4. Split into daily itineraries using k-means or simple strategy
+    Complete itinerary planning workflow with multi-day support using anchor-based clustering:
+    1. Identify preferred POIs (anchors) that define the trip skeleton
+    2. Cluster anchors by geographic proximity
+    3. Assign anchor clusters to specific days
+    4. Fill remaining slots with nearby high-priority POIs
+    5. Generate optimal sequence within each day
     
-    Returns complete multi-day sequenced itinerary.
+    Returns complete multi-day sequenced itinerary with guaranteed preferred POI inclusion.
     """
     try:
         priority_pois_list = [poi.model_dump() for poi in request.priority_pois]
         
-        # Call the orchestrator logic directly
+        # Call the orchestrator logic directly (always uses anchor-based)
         result = plan_itinerary_logic(
             priority_pois=priority_pois_list,
             trip_duration_days=request.trip_duration_days,
             max_pois_per_day=request.max_pois_per_day,
-            max_distance_threshold=request.max_distance_meters,
-            clustering_strategy=request.clustering_strategy
+            anchor_proximity_threshold=request.anchor_proximity_threshold,
+            poi_search_radius=request.poi_search_radius
         )
         
         # Check for errors

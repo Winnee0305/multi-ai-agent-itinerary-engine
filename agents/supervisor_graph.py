@@ -160,14 +160,28 @@ def create_supervisor_graph_simple(model):
         else:
             return "parse_input"
     
+    def route_start(state: TripPlannerState) -> Literal["parse_input", "recommend"]:
+        """Route from START - skip parser if state already populated"""
+        # If destination_state and next_step are already set, skip parsing
+        if state.get("destination_state") and state.get("next_step") == "recommend":
+            return "recommend"
+        return "parse_input"
+    
     graph_builder = StateGraph(TripPlannerState)
     
     graph_builder.add_node("parse_input", input_parser_node)
     graph_builder.add_node("recommend", recommender_node)
     graph_builder.add_node("plan", planner_node)
     
-    # Edges
-    graph_builder.add_edge(START, "parse_input")
+    # Edges - FIXED: Conditional START to skip parser if state pre-populated
+    graph_builder.add_conditional_edges(
+        START,
+        route_start,
+        {
+            "parse_input": "parse_input",
+            "recommend": "recommend"
+        }
+    )
     
     graph_builder.add_conditional_edges(
         "parse_input",

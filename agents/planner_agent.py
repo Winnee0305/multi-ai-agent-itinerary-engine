@@ -52,13 +52,13 @@ def create_planner_node(model=None):
             }
         
         try:
-            # Call the new plan_itinerary_logic with multi-day support
+            # Call the new plan_itinerary_logic with multi-day support (anchor-based only)
             result = plan_itinerary_logic(
                 priority_pois=top_priority_pois,
                 trip_duration_days=trip_duration_days,
                 max_pois_per_day=5,
-                max_distance_threshold=50000,  # 50km threshold
-                clustering_strategy="kmeans"  # Use k-means for geographic clustering
+                anchor_proximity_threshold=30000,  # 30km to group preferred POIs
+                poi_search_radius=50000  # 50km to search for nearby POIs
             )
             
             # Check for errors
@@ -110,7 +110,8 @@ def create_planner_node(model=None):
                 "total_distance_km": trip_summary["total_distance_meters"] / 1000,
                 "daily_itinerary": daily_itinerary,
                 "clusters": result.get("clusters", {}),
-                "clustering_strategy": result["clustering_strategy_used"]
+                "clustering_strategy": result["clustering_strategy_used"],
+                "trip_summary": trip_summary  # Include full trip_summary with preferred POI stats
             }
             
             # Build optimized_sequence for backward compatibility

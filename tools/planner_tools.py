@@ -262,175 +262,7 @@ def generate_optimal_sequence(poi_place_ids: List[str], start_place_id: str) -> 
     return sequence
 
 
-def extract_coordinates(pois: List[Dict[str, Any]]) -> tuple:
-    """
-    Extract lat/lon coordinates from POI list.
-    Returns: (coords_array, poi_map)
-    """
-    import numpy as np
-    
-    coords = []
-    poi_map = {}
-    
-    for idx, poi in enumerate(pois):
-        lat = poi.get("lat")
-        lon = poi.get("lon")
-        
-        if lat is not None and lon is not None:
-            coords.append([lat, lon])
-            poi_map[idx] = poi
-    
-    return np.array(coords), poi_map
-
-
-def split_into_days_simple(
-    sequence: List[Dict[str, Any]],
-    trip_duration_days: int,
-    max_pois_per_day: int
-) -> List[Dict[str, Any]]:
-    """
-    Split sequence into daily chunks (simple equal distribution).
-    Fallback when k-means fails or for single-day trips.
-    """
-    daily_itineraries = []
-    
-    for day_num in range(1, trip_duration_days + 1):
-        start_idx = (day_num - 1) * max_pois_per_day
-        end_idx = start_idx + max_pois_per_day
-        
-        day_pois = sequence[start_idx:end_idx]
-        
-        if not day_pois:
-            # Empty day
-            daily_itineraries.append({
-                "day": day_num,
-                "pois": [],
-                "total_pois": 0,
-                "total_distance_meters": 0,
-                "message": "Flexible day - relax or revisit favorites"
-            })
-            continue
-        
-        # Renumber sequences within each day
-        for seq_num, poi in enumerate(day_pois, start=1):
-            poi["sequence_no"] = seq_num
-        
-        # Calculate total distance
-        total_distance = sum(
-            poi.get("distance_from_previous_meters", 0) 
-            for poi in day_pois
-        )
-        
-        daily_itineraries.append({
-            "day": day_num,
-            "pois": day_pois,
-            "total_pois": len(day_pois),
-            "total_distance_meters": round(total_distance, 2)
-        })
-    
-    return daily_itineraries
-
-
-def cluster_pois_kmeans(
-    pois: List[Dict[str, Any]],
-    n_clusters: int
-) -> Dict[int, List[Dict[str, Any]]]:
-    """
-    Cluster POIs geographically using K-Means.
-    
-    Args:
-        pois: List of POIs with lat/lon
-        n_clusters: Number of clusters (= trip_duration_days)
-    
-    Returns:
-        Dict mapping cluster_id to list of POIs
-    """
-    from sklearn.cluster import KMeans
-    import numpy as np
-    
-    if len(pois) < n_clusters:
-        # Not enough POIs for clustering
-        return {0: pois}  # Return all in one cluster
-    
-    # Extract coordinates
-    coords, poi_map = extract_coordinates(pois)
-    
-    if len(coords) == 0:
-        return {0: pois}
-    
-    # Run K-Means
-    kmeans = KMeans(
-        n_clusters=n_clusters,
-        random_state=42,
-        n_init=10
-    )
-    
-    cluster_labels = kmeans.fit_predict(coords)
-    
-    # Group POIs by cluster
-    clustered_pois = {i: [] for i in range(n_clusters)}
-    
-    for idx, cluster_id in enumerate(cluster_labels):
-        if idx in poi_map:
-            clustered_pois[cluster_id].append(poi_map[idx])
-    
-    return clustered_pois
-
-
-def order_clusters_by_proximity(
-    clustered_pois: Dict[int, List[Dict]],
-    start_cluster_id: int = 0
-) -> List[int]:
-    """
-    Order clusters to minimize overnight transitions.
-    Uses cluster centroids to determine order.
-    
-    Returns: Ordered list of cluster IDs
-    """
-    if len(clustered_pois) <= 1:
-        return list(clustered_pois.keys())
-    
-    # Calculate centroid for each cluster
-    centroids = {}
-    for cluster_id, pois in clustered_pois.items():
-        if not pois:
-            continue
-        avg_lat = sum(p.get("lat", 0) for p in pois) / len(pois)
-        avg_lon = sum(p.get("lon", 0) for p in pois) / len(pois)
-        centroids[cluster_id] = (avg_lat, avg_lon)
-    
-    # Greedy nearest cluster ordering
-    ordered = [start_cluster_id]
-    remaining = set(centroids.keys()) - {start_cluster_id}
-    
-    current_centroid = centroids[start_cluster_id]
-    
-    while remaining:
-        # Find nearest cluster
-        min_dist = float('inf')
-        nearest_cluster = None
-        
-        for cluster_id in remaining:
-            centroid = centroids[cluster_id]
-            dist = haversine_distance(
-                current_centroid[0], current_centroid[1],
-                centroid[0], centroid[1]
-            )
-            if dist < min_dist:
-                min_dist = dist
-                nearest_cluster = cluster_id
-        
-        if nearest_cluster is not None:
-            ordered.append(nearest_cluster)
-            remaining.remove(nearest_cluster)
-            current_centroid = centroids[nearest_cluster]
-        else:
-            break
-    
-    # Add any remaining clusters
-    ordered.extend(remaining)
-    
-    return ordered
+# K-Means clustering functions removed - now using anchor-based clustering only
 
 
 def sequence_pois_within_cluster(
@@ -483,183 +315,427 @@ def sequence_pois_within_cluster(
     return sequence
 
 
-def split_into_days_kmeans(
-    sequence: List[Dict[str, Any]],
-    trip_duration_days: int,
-    max_pois_per_day: int
-) -> List[Dict[str, Any]]:
+def identify_anchors(priority_pois: List[Dict[str, Any]]) -> tuple:
     """
-    Split sequence into daily itineraries using K-Means geographic clustering.
+    Separate preferred POIs (anchors) from regular POIs.
+    
+    Args:
+        priority_pois: All POIs with is_preferred flags
+    
+    Returns:
+        (anchors, regular_pois)
+    """
+    anchors = [poi for poi in priority_pois if poi.get("is_preferred", False)]
+    regular = [poi for poi in priority_pois if not poi.get("is_preferred", False)]
+    
+    return anchors, regular
+
+
+def cluster_anchors_by_proximity(
+    anchors: List[Dict[str, Any]],
+    proximity_threshold_meters: int = 30000
+) -> List[List[Dict[str, Any]]]:
+    """
+    Group anchors that are geographically close.
     
     Algorithm:
-    1. Cluster POIs geographically into K groups (K = trip_duration_days)
-    2. Order clusters to minimize overnight transitions
-    3. Sequence POIs within each cluster using nearest neighbor
-    4. Balance cluster sizes if needed
+    1. Start with first anchor as cluster seed
+    2. Add nearby anchors (< threshold) to same cluster
+    3. Distant anchors start new clusters
+    4. Use greedy agglomerative approach
+    
+    Args:
+        anchors: List of preferred POIs
+        proximity_threshold_meters: Distance threshold (default 30km)
+    
+    Returns:
+        List of anchor clusters (each cluster = 1 day skeleton)
     """
-    if trip_duration_days == 1:
-        # Single day trip - no clustering needed
-        return split_into_days_simple(sequence, 1, max_pois_per_day)
+    if not anchors:
+        return []
     
-    if len(sequence) < trip_duration_days:
-        # Not enough POIs for clustering
-        return split_into_days_simple(sequence, trip_duration_days, max_pois_per_day)
+    clusters = []
+    remaining = anchors.copy()
     
-    try:
-        # Step 1: Cluster POIs
-        clustered_pois = cluster_pois_kmeans(sequence, trip_duration_days)
+    while remaining:
+        # Start new cluster with first remaining anchor
+        current_cluster = [remaining.pop(0)]
         
-        # Step 2: Order clusters
-        ordered_cluster_ids = order_clusters_by_proximity(clustered_pois)
-        
-        # Step 3: Create daily itineraries
-        daily_itineraries = []
-        prev_day_end_poi = None
-        
-        for day_num, cluster_id in enumerate(ordered_cluster_ids, start=1):
-            cluster_pois = clustered_pois[cluster_id]
+        # Find all nearby anchors
+        i = 0
+        while i < len(remaining):
+            anchor = remaining[i]
             
-            if not cluster_pois:
-                daily_itineraries.append({
-                    "day": day_num,
-                    "pois": [],
-                    "total_pois": 0,
-                    "total_distance_meters": 0,
-                    "message": "Flexible day"
-                })
-                continue
+            # Check distance to any POI in current cluster
+            is_nearby = False
+            for cluster_poi in current_cluster:
+                dist = haversine_distance(
+                    anchor["lat"], anchor["lon"],
+                    cluster_poi["lat"], cluster_poi["lon"]
+                )
+                if dist <= proximity_threshold_meters:
+                    is_nearby = True
+                    break
             
-            # Determine starting POI for this day
-            if prev_day_end_poi is not None:
-                # Find closest POI to previous day's end
-                min_dist = float('inf')
-                start_poi = cluster_pois[0]
+            if is_nearby:
+                current_cluster.append(remaining.pop(i))
+                # Don't increment i, we removed an element
+            else:
+                i += 1
+        
+        clusters.append(current_cluster)
+    
+    return clusters
+
+
+def map_anchor_clusters_to_days(
+    anchor_clusters: List[List[Dict]],
+    trip_duration_days: int,
+    max_pois_per_day: int
+) -> Dict[int, Dict]:
+    """
+    Assign anchor clusters to specific days.
+    
+    Strategy:
+    - If anchors < days: Spread them out, leave flexible days
+    - If anchors == days: 1 anchor cluster per day
+    - If anchors > days: Priority merge of nearby clusters
+    
+    Returns:
+        {day_num: {"anchors": [...], "capacity": remaining_slots}}
+    """
+    day_assignments = {}
+    num_clusters = len(anchor_clusters)
+    
+    if num_clusters == 0:
+        # No anchors, all days flexible
+        for day in range(1, trip_duration_days + 1):
+            day_assignments[day] = {"anchors": [], "capacity": max_pois_per_day}
+    
+    elif num_clusters <= trip_duration_days:
+        # Distribute anchor clusters across days
+        for day_num, cluster in enumerate(anchor_clusters, start=1):
+            day_assignments[day_num] = {
+                "anchors": cluster,
+                "capacity": max(0, max_pois_per_day - len(cluster))
+            }
+        
+        # Fill remaining days as flexible
+        for day in range(num_clusters + 1, trip_duration_days + 1):
+            day_assignments[day] = {"anchors": [], "capacity": max_pois_per_day}
+    
+    else:
+        # More anchor clusters than days - distribute across available days
+        # Strategy: Put multiple small clusters on same day
+        for day_num in range(1, trip_duration_days + 1):
+            day_assignments[day_num] = {"anchors": [], "capacity": max_pois_per_day}
+        
+        # Distribute clusters across days
+        for idx, cluster in enumerate(anchor_clusters):
+            day_num = (idx % trip_duration_days) + 1
+            day_assignments[day_num]["anchors"].extend(cluster)
+            day_assignments[day_num]["capacity"] = max(
+                0, 
+                max_pois_per_day - len(day_assignments[day_num]["anchors"])
+            )
+    
+    return day_assignments
+
+
+def fill_days_with_nearby_pois(
+    day_assignments: Dict[int, Dict],
+    regular_pois: List[Dict[str, Any]],
+    max_distance_from_anchor: int = 50000
+) -> Dict[int, List[Dict]]:
+    """
+    Fill remaining slots in each day with nearby high-priority POIs.
+    
+    Algorithm:
+    1. For each day with capacity:
+       - Calculate centroid of day's anchors
+       - Find regular POIs within max_distance
+       - Sort by priority score
+       - Fill remaining slots
+    
+    Returns:
+        {day_num: [all_pois_for_day]}
+    """
+    daily_pois = {}
+    used_pois = set()
+    
+    for day_num in sorted(day_assignments.keys()):
+        day_info = day_assignments[day_num]
+        anchors = day_info["anchors"]
+        capacity = day_info["capacity"]
+        
+        # Start with anchors
+        day_pois = anchors.copy()
+        
+        if capacity > 0 and regular_pois:
+            # Calculate day centroid
+            if anchors:
+                # Day has anchors - find POIs near the anchors
+                centroid_lat = sum(p["lat"] for p in anchors) / len(anchors)
+                centroid_lon = sum(p["lon"] for p in anchors) / len(anchors)
+                use_distance_filter = True
+            else:
+                # Flexible day (no anchors) - use highest priority remaining POIs regardless of distance
+                use_distance_filter = False
+                centroid_lat = 0
+                centroid_lon = 0
+            
+            # Find candidate POIs
+            candidates = []
+            for poi in regular_pois:
+                if poi["google_place_id"] in used_pois:
+                    continue
                 
-                for poi in cluster_pois:
+                if use_distance_filter:
+                    # For days with anchors, enforce proximity requirement
                     dist = haversine_distance(
-                        prev_day_end_poi["lat"], prev_day_end_poi["lon"],
+                        centroid_lat, centroid_lon,
                         poi["lat"], poi["lon"]
                     )
-                    if dist < min_dist:
-                        min_dist = dist
-                        start_poi = poi
-            else:
-                start_poi = cluster_pois[0]
+                    
+                    if dist <= max_distance_from_anchor:
+                        candidates.append({
+                            "poi": poi,
+                            "distance": dist,
+                            "priority": poi.get("priority_score", 0)
+                        })
+                else:
+                    # For flexible days, include all remaining POIs
+                    candidates.append({
+                        "poi": poi,
+                        "distance": 0,  # Distance not relevant for flexible days
+                        "priority": poi.get("priority_score", 0)
+                    })
             
-            # Sequence POIs within cluster
-            day_sequence = sequence_pois_within_cluster(cluster_pois, start_poi)
+            # Sort by priority (higher is better)
+            candidates.sort(key=lambda x: x["priority"], reverse=True)
             
-            # Limit to max_pois_per_day
-            day_sequence = day_sequence[:max_pois_per_day]
-            
-            # Calculate total distance
-            total_distance = sum(
-                poi.get("distance_from_previous_meters", 0)
-                for poi in day_sequence
-            )
-            
-            # Calculate overnight transition if not first day
-            overnight_transition = None
-            if prev_day_end_poi is not None and day_sequence:
-                transition_dist = haversine_distance(
-                    prev_day_end_poi["lat"], prev_day_end_poi["lon"],
-                    day_sequence[0]["lat"], day_sequence[0]["lon"]
-                )
-                overnight_transition = {
-                    "from_poi": prev_day_end_poi.get("google_matched_name") or prev_day_end_poi.get("name", "Unknown"),
-                    "to_poi": day_sequence[0].get("google_matched_name") or day_sequence[0].get("name", "Unknown"),
-                    "distance_meters": round(transition_dist, 2)
-                }
-            
+            # Fill remaining slots
+            for candidate in candidates[:capacity]:
+                day_pois.append(candidate["poi"])
+                used_pois.add(candidate["poi"]["google_place_id"])
+        
+        daily_pois[day_num] = day_pois
+    
+    return daily_pois
+
+
+def sequence_daily_pois(
+    daily_pois: Dict[int, List[Dict]],
+    prev_day_end_poi: Optional[Dict] = None
+) -> List[Dict[str, Any]]:
+    """
+    Apply nearest-neighbor sequencing within each day.
+    
+    Args:
+        daily_pois: Dict mapping day number to list of POIs
+        prev_day_end_poi: Last POI from previous execution (for continuity)
+    
+    Returns:
+        daily_itineraries with same structure as current format
+    """
+    daily_itineraries = []
+    prev_day_last_poi = prev_day_end_poi
+    
+    for day_num in sorted(daily_pois.keys()):
+        pois = daily_pois[day_num]
+        
+        if not pois:
             daily_itineraries.append({
                 "day": day_num,
-                "pois": day_sequence,
-                "total_pois": len(day_sequence),
-                "total_distance_meters": round(total_distance, 2),
-                "overnight_transition": overnight_transition
+                "pois": [],
+                "total_pois": 0,
+                "total_distance_meters": 0,
+                "message": "Flexible day - relax or revisit favorites"
             })
-            
-            # Update for next iteration
-            if day_sequence:
-                prev_day_end_poi = day_sequence[-1]
+            continue
         
-        return daily_itineraries
+        # Find best starting POI
+        if prev_day_last_poi and pois:
+            # Start with POI closest to previous day's end
+            start_poi = min(
+                pois,
+                key=lambda p: haversine_distance(
+                    prev_day_last_poi["lat"], prev_day_last_poi["lon"],
+                    p["lat"], p["lon"]
+                )
+            )
+        else:
+            # Start with highest priority POI (or first anchor)
+            anchors = [p for p in pois if p.get("is_preferred", False)]
+            start_poi = anchors[0] if anchors else max(pois, key=lambda p: p.get("priority_score", 0))
+        
+        # Sequence using nearest neighbor
+        sequenced = sequence_pois_within_cluster(pois, start_poi)
+        
+        # Calculate stats
+        total_distance = sum(
+            poi.get("distance_from_previous_meters", 0)
+            for poi in sequenced
+        )
+        
+        # Calculate overnight transition if not first day
+        overnight_transition = None
+        if prev_day_last_poi is not None and sequenced:
+            transition_dist = haversine_distance(
+                prev_day_last_poi["lat"], prev_day_last_poi["lon"],
+                sequenced[0]["lat"], sequenced[0]["lon"]
+            )
+            overnight_transition = {
+                "from_poi": prev_day_last_poi.get("name", "Unknown"),
+                "to_poi": sequenced[0].get("name", "Unknown"),
+                "distance_meters": round(transition_dist, 2)
+            }
+        
+        daily_itineraries.append({
+            "day": day_num,
+            "pois": sequenced,
+            "total_pois": len(sequenced),
+            "total_distance_meters": round(total_distance, 2),
+            "overnight_transition": overnight_transition
+        })
+        
+        # Update for next iteration
+        if sequenced:
+            prev_day_last_poi = sequenced[-1]
     
-    except Exception as e:
-        # Fallback to simple splitting if k-means fails
-        print(f"K-Means clustering failed: {e}. Falling back to simple split.")
-        return split_into_days_simple(sequence, trip_duration_days, max_pois_per_day)
+    return daily_itineraries
 
 
-def plan_itinerary_logic(
+def plan_itinerary_anchor_based(
     priority_pois: List[Dict[str, Any]],
     trip_duration_days: int = 1,
     max_pois_per_day: int = 6,
-    max_distance_threshold: int = 30000,
-    clustering_strategy: str = "kmeans"
+    anchor_proximity_threshold: int = 30000,
+    poi_search_radius: int = 50000
 ) -> Dict[str, Any]:
     """
-    Orchestrator logic for planning with multi-day support.
+    Anchor-based itinerary planning - preferred POIs define the trip skeleton.
+    
+    Workflow:
+    1. Identify anchors (preferred POIs)
+    2. Cluster anchors by geographic proximity
+    3. Assign anchor clusters to days
+    4. Fill days with nearby regular POIs
+    5. Sequence each day's POIs using nearest neighbor
     
     Args:
-        priority_pois: List of POIs sorted by priority score
+        priority_pois: All POIs with is_preferred flags and priority scores
         trip_duration_days: Number of days for the trip
-        max_pois_per_day: Maximum POIs to visit per day
-        max_distance_threshold: Distance threshold for clustering (meters)
-        clustering_strategy: "simple" | "kmeans" - Day splitting strategy
+        max_pois_per_day: Maximum POIs per day
+        anchor_proximity_threshold: Distance to group anchors (meters, default 30km)
+        poi_search_radius: Max distance to search for fill POIs (meters, default 50km)
     
     Returns:
         Dict with daily_itineraries, trip_summary, and metadata
     """
-    # 1. Select Centroid
-    centroid_info = select_best_centroid(priority_pois)
-    if "error" in centroid_info:
-        return {"error": "Could not select centroid"}
-        
-    centroid_id = centroid_info["google_place_id"]
+    # Step 1: Identify anchors
+    anchors, regular_pois = identify_anchors(priority_pois)
     
-    # 2. Cluster by distance (nearby vs far)
-    clusters = cluster_pois_by_distance(centroid_id, priority_pois, max_distance_threshold)
+    # Step 2: Cluster anchors by proximity
+    anchor_clusters = cluster_anchors_by_proximity(
+        anchors, 
+        anchor_proximity_threshold
+    )
     
-    # 3. Limit to realistic number of POIs
-    max_total_pois = trip_duration_days * max_pois_per_day
-    target_pois = [p["google_place_id"] for p in clusters["nearby"][:max_total_pois]]
+    # Step 3: Map anchor clusters to days
+    day_assignments = map_anchor_clusters_to_days(
+        anchor_clusters,
+        trip_duration_days,
+        max_pois_per_day
+    )
     
-    # Remove centroid from target list to avoid duplication
-    if centroid_id in target_pois:
-        target_pois.remove(centroid_id)
+    # Step 4: Fill days with nearby regular POIs
+    daily_pois = fill_days_with_nearby_pois(
+        day_assignments,
+        regular_pois,
+        poi_search_radius
+    )
     
-    # 4. Generate initial sequence (nearest neighbor)
-    sequence = generate_optimal_sequence(target_pois, centroid_id)
+    # Step 5: Sequence each day's POIs
+    daily_itineraries = sequence_daily_pois(daily_pois)
     
-    # 5. Split into daily itineraries
-    if clustering_strategy == "kmeans":
-        daily_itineraries = split_into_days_kmeans(
-            sequence, trip_duration_days, max_pois_per_day
-        )
-    else:  # "simple"
-        daily_itineraries = split_into_days_simple(
-            sequence, trip_duration_days, max_pois_per_day
-        )
-    
-    # 6. Calculate trip summary
+    # Step 6: Calculate summary stats
     total_pois = sum(day["total_pois"] for day in daily_itineraries)
     total_distance = sum(day["total_distance_meters"] for day in daily_itineraries)
     
+    included_preferred_count = sum(
+        1 for day in daily_itineraries 
+        for poi in day["pois"] 
+        if poi.get("is_preferred", False)
+    )
+    
+    # Determine centroid (first anchor or highest priority POI)
+    centroid_poi = anchors[0] if anchors else (priority_pois[0] if priority_pois else None)
+    
+    centroid = {
+        "google_place_id": centroid_poi.get("google_place_id", ""),
+        "name": centroid_poi.get("name", "Unknown"),
+        "priority_score": centroid_poi.get("priority_score", 0),
+        "lat": centroid_poi.get("lat", 0),
+        "lon": centroid_poi.get("lon", 0),
+        "reason": "Primary anchor (preferred POI)" if anchors else "Highest priority POI"
+    } if centroid_poi else {"error": "No POIs available"}
+    
     return {
         "trip_duration_days": trip_duration_days,
-        "centroid": centroid_info,
+        "centroid": centroid,
         "daily_itineraries": daily_itineraries,
         "trip_summary": {
             "total_pois": total_pois,
             "total_days": trip_duration_days,
             "total_distance_meters": round(total_distance, 2),
             "avg_pois_per_day": round(total_pois / trip_duration_days, 1) if trip_duration_days > 0 else 0,
-            "avg_distance_per_day_meters": round(total_distance / trip_duration_days, 2) if trip_duration_days > 0 else 0
+            "avg_distance_per_day_meters": round(total_distance / trip_duration_days, 2) if trip_duration_days > 0 else 0,
+            "preferred_pois_requested": len(anchors),
+            "preferred_pois_included": included_preferred_count,
+            "anchor_clusters": len(anchor_clusters)
         },
-        "clustering_strategy_used": clustering_strategy,
-        "clusters": clusters  # Keep for debugging
+        "clustering_strategy_used": "anchor_based",
+        "clusters": {"anchor_clusters": len(anchor_clusters), "days_with_anchors": len([d for d in day_assignments.values() if d["anchors"]])}
     }
+
+
+def plan_itinerary_logic(
+    priority_pois: List[Dict[str, Any]],
+    trip_duration_days: int = 1,
+    max_pois_per_day: int = 6,
+    anchor_proximity_threshold: int = 30000,
+    poi_search_radius: int = 50000
+) -> Dict[str, Any]:
+    """
+    Main orchestrator for itinerary planning using anchor-based strategy.
+    
+    Always uses anchor-based clustering for optimal results:
+    - Preferred POIs (anchors) define the trip skeleton
+    - Regular POIs fill remaining slots
+    - Geographic clustering ensures efficient routing
+    
+    Args:
+        priority_pois: List of POIs with priority scores and is_preferred flags
+        trip_duration_days: Number of days for the trip
+        max_pois_per_day: Maximum POIs to visit per day
+        anchor_proximity_threshold: Distance to group anchors (meters, default 30km)
+        poi_search_radius: Max distance to search for fill POIs (meters, default 50km)
+    
+    Returns:
+        Dict with daily_itineraries, trip_summary, and metadata
+    """
+    if not priority_pois:
+        return {"error": "No POIs available for planning"}
+    
+    # Always use anchor-based clustering
+    return plan_itinerary_anchor_based(
+        priority_pois=priority_pois,
+        trip_duration_days=trip_duration_days,
+        max_pois_per_day=max_pois_per_day,
+        anchor_proximity_threshold=anchor_proximity_threshold,
+        poi_search_radius=poi_search_radius
+    )
 
 # ==============================================================================
 # 3. EXPORTED TOOLS (Wrappers)
@@ -692,13 +768,13 @@ get_pois_near_centroid_tool = StructuredTool.from_function(
 select_best_centroid_tool = StructuredTool.from_function(
     func=select_best_centroid,
     name="select_best_centroid",
-    description="Select the best centroid from top priority POIs."
+    description="[DEPRECATED] Select the best centroid from top priority POIs. Use plan_itinerary_logic instead."
 )
 
 cluster_pois_tool = StructuredTool.from_function(
     func=cluster_pois_by_distance,
     name="cluster_pois_by_distance",
-    description="Cluster POIs based on distance from centroid."
+    description="[DEPRECATED] Cluster POIs based on distance from centroid. Use plan_itinerary_logic instead."
 )
 
 generate_optimal_sequence_tool = StructuredTool.from_function(
@@ -713,3 +789,245 @@ plan_itinerary_tool = StructuredTool.from_function(
     name="plan_itinerary_logic",
     description="Complete workflow: Selects centroid, clusters POIs, and sequences them."
 )
+
+
+# ==============================================================================
+# 7. PACKING LIST GENERATION
+# ==============================================================================
+
+def analyze_trip_context(daily_itineraries: List[Dict], destination_state: str) -> Dict:
+    """
+    Analyze itinerary to extract trip context for packing list generation.
+    
+    Args:
+        daily_itineraries: List of daily plans with POIs
+        destination_state: Malaysian state name
+        
+    Returns:
+        Dict with activities, categories, climate, and special requirements
+    """
+    activities = set()
+    categories = set()
+    special_requirements = set()
+    poi_names = []
+    
+    # Extract from POIs
+    for day in daily_itineraries:
+        for poi in day.get("pois", []):
+            poi_name = poi.get("name", "").lower()
+            poi_names.append(poi.get("name", ""))
+            category = poi.get("category", "").lower()
+            categories.add(category)
+            
+            # Infer activities from POI names and categories
+            if any(keyword in poi_name for keyword in ["gunung", "mountain", "hill", "peak", "trail", "trek"]):
+                activities.add("hiking")
+                activities.add("nature_walks")
+            if any(keyword in poi_name for keyword in ["park", "garden", "forest", "nature", "jungle"]):
+                activities.add("nature_walks")
+            if any(keyword in poi_name for keyword in ["beach", "island", "pulau", "pantai", "sea"]):
+                activities.add("swimming")
+                activities.add("beach_activities")
+            if any(keyword in poi_name for keyword in ["temple", "mosque", "church", "masjid", "kuil"]):
+                activities.add("temple_visits")
+                special_requirements.add("modest_clothing")
+            if any(keyword in poi_name for keyword in ["theme park", "skyworlds", "legoland", "sunway"]):
+                activities.add("theme_parks")
+            if any(keyword in poi_name for keyword in ["mall", "shopping", "market", "bazaar"]):
+                activities.add("shopping")
+            if any(keyword in poi_name for keyword in ["cave", "gua"]):
+                activities.add("cave_exploration")
+            if any(keyword in poi_name for keyword in ["waterfall", "air terjun"]):
+                activities.add("waterfall_visits")
+    
+    # Infer climate
+    climate = infer_climate(destination_state, poi_names)
+    
+    return {
+        "activities": sorted(list(activities)),
+        "categories": sorted(list(categories)),
+        "special_requirements": sorted(list(special_requirements)),
+        "climate": climate,
+        "poi_names": poi_names[:10]  # First 10 for context
+    }
+
+
+def infer_climate(state: str, poi_names: List[str]) -> str:
+    """
+    Infer climate based on state and POI names.
+    
+    Args:
+        state: Malaysian state name
+        poi_names: List of POI names for context
+        
+    Returns:
+        Climate type string
+    """
+    poi_text = " ".join(poi_names).lower()
+    
+    # Check for highland indicators
+    highland_keywords = ["cameron", "genting", "fraser", "highland", "bukit tinggi"]
+    is_highland = any(keyword in poi_text for keyword in highland_keywords)
+    
+    # State-based climate
+    highland_states = ["Pahang", "Perak"]
+    coastal_states = ["Penang", "Kedah", "Terengganu", "Kelantan", "Johor", "Melaka"]
+    
+    if state in highland_states and is_highland:
+        return "highland_cool"
+    elif state in coastal_states or "beach" in poi_text or "island" in poi_text:
+        return "coastal_hot"
+    else:
+        return "tropical_warm"
+
+
+def generate_packing_list_with_llm(
+    trip_context: Dict,
+    trip_duration_days: int,
+    destination_state: str,
+    model
+) -> Dict:
+    """
+    Use LLM to generate smart packing list based on trip context.
+    
+    Args:
+        trip_context: Analysis of trip activities and requirements
+        trip_duration_days: Number of days
+        destination_state: Malaysian state
+        model: ChatGoogleGenerativeAI instance (injected from caller)
+        
+    Returns:
+        Dict with categories and smart_tips
+    """
+    from langchain_core.messages import HumanMessage
+    import json
+    import re
+    
+    # Climate descriptions
+    climate_descriptions = {
+        "highland_cool": "Cool highland climate (15-25°C), potential rain, cooler evenings. Pack layers and light jacket.",
+        "coastal_hot": "Hot & humid coastal climate (28-35°C), high UV exposure, beach weather. Pack light, breathable clothing.",
+        "tropical_warm": "Warm tropical climate (25-32°C), humid with occasional rain. Pack light, quick-dry clothing."
+    }
+    
+    climate_desc = climate_descriptions.get(trip_context["climate"], "Tropical climate")
+    activities_str = ", ".join(trip_context["activities"]) if trip_context["activities"] else "general sightseeing"
+    special_req_str = ", ".join(trip_context["special_requirements"]) if trip_context["special_requirements"] else "None"
+    poi_context = ", ".join(trip_context["poi_names"][:5]) if trip_context["poi_names"] else "various attractions"
+    
+    prompt = f"""You are a travel packing expert for Malaysia tourism.
+
+Generate a comprehensive, categorized packing list for this trip:
+
+TRIP DETAILS:
+- Destination: {destination_state}, Malaysia
+- Duration: {trip_duration_days} days
+- Climate: {climate_desc}
+- Activities: {activities_str}
+- Key POIs: {poi_context}
+- Special Requirements: {special_req_str}
+
+INSTRUCTIONS:
+1. Create 8 categories: Clothing, Footwear, Activity Gear, Electronics, Health & Safety, Documents, Toiletries, Miscellaneous
+2. For each item, provide:
+   - Specific item name (be practical and specific to Malaysia/activities)
+   - Quantity (number or null if variable)
+   - Reason (relate to specific activities/climate/POIs)
+   - Priority: "essential" (must have), "recommended" (should have), "optional" (nice to have), or "required" (cultural/legal necessity)
+3. Adjust quantities based on {trip_duration_days}-day duration
+4. Add 3-5 practical smart tips based on the specific activities and destination
+5. Consider Malaysian context: tropical climate, multicultural, religious sites, outdoor activities
+
+Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
+{{
+  "categories": [
+    {{
+      "name": "Clothing",
+      "icon": "👕",
+      "items": [
+        {{"item": "T-shirts (breathable)", "quantity": 5, "reason": "Daily wear for activities", "priority": "essential"}},
+        {{"item": "Light jacket", "quantity": 1, "reason": "Cool highland evenings", "priority": "essential"}}
+      ]
+    }},
+    {{
+      "name": "Footwear",
+      "icon": "👟",
+      "items": [
+        {{"item": "Hiking shoes", "quantity": 1, "reason": "Mountain trails", "priority": "essential"}}
+      ]
+    }},
+    {{
+      "name": "Activity Gear",
+      "icon": "🎒",
+      "items": []
+    }},
+    {{
+      "name": "Electronics",
+      "icon": "📱",
+      "items": []
+    }},
+    {{
+      "name": "Health & Safety",
+      "icon": "💊",
+      "items": []
+    }},
+    {{
+      "name": "Documents",
+      "icon": "📄",
+      "items": []
+    }},
+    {{
+      "name": "Toiletries",
+      "icon": "🧴",
+      "items": []
+    }},
+    {{
+      "name": "Miscellaneous",
+      "icon": "🎫",
+      "items": []
+    }}
+  ],
+  "smart_tips": ["tip1", "tip2", "tip3"]
+}}
+
+IMPORTANT: Return pure JSON only, no markdown formatting, no ```json blocks."""
+    
+    try:
+        response = model.invoke([HumanMessage(content=prompt)])
+        content = response.content.strip()
+        
+        # Try direct JSON parse first
+        try:
+            result = json.loads(content)
+            return result
+        except json.JSONDecodeError:
+            # Fallback: extract JSON from markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(1))
+                return result
+            
+            # Last attempt: find JSON object in content
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(0))
+                return result
+            
+            raise ValueError(f"Failed to parse LLM response as JSON: {content[:200]}")
+            
+    except Exception as e:
+        # Return fallback structure
+        print(f"Error generating packing list: {str(e)}")
+        return {
+            "categories": [
+                {
+                    "name": "Clothing",
+                    "icon": "👕",
+                    "items": [
+                        {"item": "T-shirts", "quantity": trip_duration_days, "reason": "Daily wear", "priority": "essential"},
+                        {"item": "Comfortable pants", "quantity": 2, "reason": "General activities", "priority": "essential"}
+                    ]
+                }
+            ],
+            "smart_tips": ["Pack light and comfortable clothing", "Bring rain protection", "Stay hydrated"]
+        }

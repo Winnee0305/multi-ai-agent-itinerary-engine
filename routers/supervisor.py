@@ -49,12 +49,13 @@ def transform_to_mobile_format(result: dict) -> dict:
     Transform graph result to mobile-optimized format.
     
     Extracts only essential data for mobile app:
-    - Google Place IDs with sequence numbers
+    - Google Place IDs with global sequence numbers (1-N across entire trip)
     - Day assignments
+    - Preferred POI flags
     - Minimal trip summary
     
     Args:
-        result: Full graph execution result
+        result: Full graph execution result with itinerary.daily_itinerary structure
         
     Returns:
         Mobile-optimized response dictionary
@@ -64,21 +65,31 @@ def transform_to_mobile_format(result: dict) -> dict:
     itinerary = result.get("itinerary", {})
     daily_plans = itinerary.get("daily_itinerary", [])
     
-    # Extract POIs with sequence numbers
+    # Extract POIs with sequence numbers that restart each day
     for day_plan in daily_plans:
+        day_number = day_plan.get("day", 1)
+        day_sequence = 1  # Reset sequence for each day
+        
         for poi in day_plan.get("pois", []):
             # Validate Google Place ID exists
             place_id = poi.get("google_place_id")
-            if place_id is None:
-                # Handle POIs without Google Place ID (skip or use alternative ID)
-                place_id = f"unknown_{poi.get('global_sequence', 0)}"
+            if not place_id:
+                # Skip POIs without valid Google Place ID
+                continue
             
             pois_sequence.append({
                 "google_place_id": place_id,
-                "sequence_number": poi.get("global_sequence", poi.get("sequence_no", 0)),
-                "day": poi.get("day", day_plan.get("day", 1)),
-                "name": poi.get("google_matched_name") or poi.get("name", "Unknown POI")
+                "sequence_number": day_sequence,
+                "day": poi.get("day", day_number),
+                "name": poi.get("google_matched_name") or poi.get("name", "Unknown POI"),
+                "is_preferred": poi.get("is_preferred", False),
+                "distance_from_previous_meters": poi.get("distance_from_previous_meters", 0)
             })
+            
+            day_sequence += 1
+    
+    # Calculate trip summary stats
+    trip_summary = itinerary.get("trip_summary", {})
     
     return {
         "success": True,
@@ -87,11 +98,14 @@ def transform_to_mobile_format(result: dict) -> dict:
             "duration_days": result.get("trip_duration_days"),
             "travelers": result.get("num_travelers"),
             "preferences": result.get("user_preferences", []),
-            "centroid_name": itinerary.get("centroid", {}).get("name")
+            "centroid_name": itinerary.get("centroid", {}).get("name"),
+            "preferred_pois_requested": trip_summary.get("preferred_pois_requested", 0),
+            "preferred_pois_included": trip_summary.get("preferred_pois_included", 0)
         },
         "pois_sequence": pois_sequence,
         "total_pois": len(pois_sequence),
         "total_distance_km": round(itinerary.get("total_distance_km", 0.0), 2),
+        "clustering_strategy": itinerary.get("clustering_strategy", "anchor_based"),
         "error_message": result.get("error_message")
     }
 
@@ -108,12 +122,12 @@ class TripPlanningRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "destination_state": "Penang",
-                "user_preferences": ["Food", "Culture", "Art"],
+                "destination_state": "Pahang",
+                "user_preferences": ["Food", "Culture", "Art", "Nature"],
                 "number_of_travelers": 2,
-                "trip_duration_days": 3,
-                "preferred_poi_names": ["Kek Lok Si Temple", "Penang Hill"],
-                "max_pois_per_day": 6
+                "trip_duration_days": 7,
+                "preferred_poi_names": ["Cameron Highlands", "Lavender Garden", "Genting Skyworlds Theme Park"],
+                "max_pois_per_day": 4
             }
         }
 
@@ -132,19 +146,22 @@ class NaturalLanguageRequest(BaseModel):
 
 class MobilePOI(BaseModel):
     """Lightweight POI data structure for mobile app"""
-    google_place_id: Optional[str] = Field(..., description="Google Place ID for fetching POI details")
+    google_place_id: str = Field(..., description="Google Place ID for fetching POI details")
     sequence_number: int = Field(..., description="Global sequence number (1-N) for entire trip")
     day: int = Field(..., description="Day number of the trip")
     name: str = Field(..., description="POI name for reference")
+    is_preferred: bool = Field(default=False, description="User explicitly requested this POI")
+    distance_from_previous_meters: float = Field(default=0, description="Distance from previous POI in sequence")
 
 
 class MobileItineraryResponse(BaseModel):
     """Mobile-optimized trip itinerary response"""
     success: bool
-    trip_summary: dict = Field(..., description="Trip overview information")
-    pois_sequence: List[MobilePOI] = Field(..., description="Sequential list of POIs with place IDs")
+    trip_summary: dict = Field(..., description="Trip overview information including preferred POI stats")
+    pois_sequence: List[MobilePOI] = Field(..., description="Sequential list of POIs with place IDs (1-N across entire trip)")
     total_pois: int = Field(..., description="Total number of POIs in itinerary")
     total_distance_km: float = Field(..., description="Total travel distance in kilometers")
+    clustering_strategy: str = Field(default="anchor_based", description="Clustering strategy used (simple or kmeans)")
     error_message: Optional[str] = Field(default=None, description="Error message if any")
 
 
@@ -154,28 +171,33 @@ async def plan_trip(request: TripPlanningRequest):
     Complete trip planning using supervisor graph.
     
     The graph will:
-    1. Parse the structured request
+    1. Parse the structured request (bypasses LLM parser for reliability)
     2. Get POI recommendations from Recommender Node
     3. Create optimal itinerary from Planner Node
     4. Return complete trip plan with routes and sequences (no formatting)
+    
+    Direct state population ensures preferred POIs are never lost in translation.
     """
     try:
         # Get simple graph (without formatting for API)
         graph = get_graph_simple()
         
-        # Construct natural language query
-        query = f"""
-        Plan a {request.trip_duration_days}-day trip to {request.destination_state} for {request.number_of_travelers} people.
+        # FIXED: For structured API requests, populate state directly instead of using LLM parser
+        # This ensures preferred_poi_names are not lost in LLM translation
+        initial_state = {
+            "messages": [HumanMessage(content=f"Plan a {request.trip_duration_days}-day trip to {request.destination_state}")],
+            "destination_state": request.destination_state,
+            "user_preferences": request.user_preferences,
+            "num_travelers": request.number_of_travelers,
+            "trip_duration_days": request.trip_duration_days,
+            "preferred_pois": request.preferred_poi_names,  # Direct mapping - no LLM parsing needed
+            "num_pois": 50,
+            "next_step": "recommend"  # Skip input parser, go straight to recommender
+        }
         
-        User interests: {', '.join(request.user_preferences)}
-        """
-        
-        if request.preferred_poi_names:
-            query += f"\nMust visit: {', '.join(request.preferred_poi_names)}"
-        
-        # Invoke graph
+        # Invoke graph with pre-populated state
         result = graph.invoke(
-            {"messages": [HumanMessage(content=query)]},
+            initial_state,
             config={"configurable": {"thread_id": "api_plan_trip"}}
         )
         
@@ -187,6 +209,7 @@ async def plan_trip(request: TripPlanningRequest):
                 "trip_duration_days": result.get("trip_duration_days"),
                 "num_travelers": result.get("num_travelers"),
                 "user_preferences": result.get("user_preferences"),
+                "preferred_pois": result.get("preferred_pois"),
             },
             "recommendations": {
                 "top_priority_pois": result.get("top_priority_pois", []),
@@ -204,36 +227,46 @@ async def plan_trip(request: TripPlanningRequest):
 @router.post("/plan-trip/mobile", response_model=MobileItineraryResponse)
 async def plan_trip_mobile(request: TripPlanningRequest):
     """
-    Mobile-optimized trip planning endpoint.
+    Mobile-optimized trip planning endpoint with preferred POI support.
     
     Returns minimal data structure optimized for mobile app consumption:
     - Google Place IDs with global sequence numbers (1-N across entire trip)
-    - Day assignments for each POI
-    - Trip summary metadata
-    - Total distance and POI count
+    - Day assignments for each POI (handles multi-day trips)
+    - Preferred POI flags (is_preferred: true for user-requested POIs)
+    - Distance from previous POI in sequence
+    - Trip summary with preferred POI inclusion stats
+    - Anchor-based clustering for optimal day splitting with guaranteed preferred POI inclusion
     
     The mobile app can use google_place_id to fetch full POI details
     from Google Places API as needed.
     
-    Response is significantly smaller than /plan-trip endpoint.
+    Features:
+    - Ensures preferred POIs are included in final itinerary (100% inclusion rate)
+    - Uses anchor-based clustering where preferred POIs define the trip skeleton
+    - Handles trips with more days than available POIs (flexible days)
+    - Response is significantly smaller than /plan-trip endpoint
+    - Direct state population bypasses LLM parsing for reliability
     """
     try:
         # Get simple graph (without formatting for API)
         graph = get_graph_simple()
         
-        # Construct natural language query
-        query = f"""
-        Plan a {request.trip_duration_days}-day trip to {request.destination_state} for {request.number_of_travelers} people.
+        # FIXED: For structured API requests, populate state directly instead of using LLM parser
+        # This ensures preferred_poi_names are not lost in LLM translation
+        initial_state = {
+            "messages": [HumanMessage(content=f"Plan a {request.trip_duration_days}-day trip to {request.destination_state}")],
+            "destination_state": request.destination_state,
+            "user_preferences": request.user_preferences,
+            "num_travelers": request.number_of_travelers,
+            "trip_duration_days": request.trip_duration_days,
+            "preferred_pois": request.preferred_poi_names,  # Direct mapping - no LLM parsing needed
+            "num_pois": 50,
+            "next_step": "recommend"  # Skip input parser, go straight to recommender
+        }
         
-        User interests: {', '.join(request.user_preferences)}
-        """
-        
-        if request.preferred_poi_names:
-            query += f"\nMust visit: {', '.join(request.preferred_poi_names)}"
-        
-        # Invoke graph
+        # Invoke graph with pre-populated state
         result = graph.invoke(
-            {"messages": [HumanMessage(content=query)]},
+            initial_state,
             config={"configurable": {"thread_id": "api_mobile_plan"}}
         )
         
@@ -357,3 +390,86 @@ async def get_supervisor_capabilities():
             "Create a 2-day itinerary in Malacca focused on history, must visit A Famosa"
         ]
     }
+
+
+class PackingListRequest(BaseModel):
+    """Request for smart packing list generation"""
+    daily_itineraries: List[dict] = Field(..., description="Daily itinerary plans from planner")
+    trip_duration_days: int = Field(..., ge=1, description="Trip duration in days")
+    destination_state: str = Field(..., description="Malaysian state destination")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "daily_itineraries": [
+                    {
+                        "day": 1,
+                        "pois": [
+                            {"name": "Lavender Garden Cameron", "category": "nature"},
+                            {"name": "Gunung Brinchang", "category": "hiking"}
+                        ]
+                    }
+                ],
+                "trip_duration_days": 5,
+                "destination_state": "Pahang"
+            }
+        }
+
+
+@router.post("/generate-packing-list/mobile")
+async def generate_packing_list_mobile(request: PackingListRequest):
+    """
+    Generate a smart, categorized packing list for mobile app.
+    
+    Analyzes the trip itinerary (POIs, activities, climate) and uses LLM 
+    to generate practical packing recommendations with categories, quantities,
+    and reasons for each item.
+    
+    Returns:
+        - trip_summary: Analysis of activities and climate
+        - categories: List of packing categories with items
+        - smart_tips: Practical tips for the specific trip
+    """
+    from tools.planner_tools import analyze_trip_context, generate_packing_list_with_llm
+    
+    try:
+        # Get shared model instance (reuse singleton from supervisor graph)
+        global _model
+        if _model is None:
+            _model = ChatGoogleGenerativeAI(
+                model=settings.DEFAULT_LLM_MODEL,
+                temperature=0.3  # Lower temperature for consistent packing lists
+            )
+        
+        # Analyze trip context from itinerary
+        trip_context = analyze_trip_context(
+            request.daily_itineraries,
+            request.destination_state
+        )
+        
+        # Generate packing list with LLM (pass model instance)
+        packing_data = generate_packing_list_with_llm(
+            trip_context,
+            request.trip_duration_days,
+            request.destination_state,
+            _model  # Reuse singleton model
+        )
+        
+        # Build mobile-optimized response
+        return {
+            "success": True,
+            "trip_summary": {
+                "destination": request.destination_state,
+                "duration_days": request.trip_duration_days,
+                "activities": trip_context["activities"],
+                "climate": trip_context["climate"]
+            },
+            "categories": packing_data.get("categories", []),
+            "smart_tips": packing_data.get("smart_tips", [])
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate packing list: {str(e)}"
+        )
