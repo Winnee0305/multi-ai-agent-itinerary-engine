@@ -5,7 +5,7 @@ FastAPI router for Supervisor Graph endpoints (LangGraph-based)
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from agents.supervisor_graph import create_supervisor_graph, create_supervisor_graph_simple
@@ -284,15 +284,50 @@ async def chat_with_supervisor(request: NaturalLanguageRequest):
     """
     Natural language chat with supervisor graph.
     
-    The graph understands various requests:
-    - Complete trip planning
-    - Just recommendations
-    - Specific questions about destinations
+    Supports two modes:
+    1. Trip Planning: If user asks for trip plans, hotels, POIs, etc.
+       → Routes through full planning workflow
+    2. General Chat: Simple greetings, questions about Malaysia, etc.
+       → Returns conversational response via LLM
     
-    Returns a formatted, user-friendly response.
+    The graph intelligently detects planning vs. chat requests.
     """
     try:
-        # Get full graph (with formatting)
+        # Get shared model instance
+        global _model
+        if _model is None:
+            _model = ChatGoogleGenerativeAI(
+                model=settings.DEFAULT_LLM_MODEL,
+                temperature=settings.LLM_TEMPERATURE
+            )
+        
+        query_lower = request.query.lower().strip()
+        
+        # Quick check: Is this a planning request or general chat?
+        planning_keywords = [
+            "plan", "trip", "itinerary", "recommend", "poi", "visit", "days",
+            "hotel", "where to", "what to do", "travel", "vacation", "tour",
+            "attractions", "things to do", "must visit", "best", "explore",
+            "destination", "state", "duration"
+        ]
+        
+        is_planning_request = any(keyword in query_lower for keyword in planning_keywords)
+        
+        if not is_planning_request and len(query_lower) < 30:
+            # This looks like general chat - respond conversationally without planning
+            response = _model.invoke([
+                SystemMessage(content="You are a friendly Malaysia tourism assistant. Answer questions conversationally and warmly. Keep responses concise (2-3 sentences)."),
+                HumanMessage(content=request.query)
+            ])
+            
+            return {
+                "success": True,
+                "response": response.content,
+                "mode": "conversational",
+                "trip_context": None
+            }
+        
+        # Otherwise, route through planning workflow
         graph = get_graph()
         
         # Invoke graph
@@ -307,6 +342,7 @@ async def chat_with_supervisor(request: NaturalLanguageRequest):
             return {
                 "success": True,
                 "response": final_message.content,
+                "mode": "planning",
                 "trip_context": {
                     "destination_state": result.get("destination_state"),
                     "trip_duration_days": result.get("trip_duration_days"),

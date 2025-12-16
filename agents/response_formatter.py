@@ -69,11 +69,10 @@ def create_response_formatter_node(model=None):
             response_parts.append(f"### ⭐ Top {min(10, len(top_priority_pois))} Recommended Places")
             response_parts.append("")
             
-            # Show top 10 in clean numbered list
+            # Show top 10 in clean numbered list (without priority scores)
             for i, poi in enumerate(top_priority_pois[:10], 1):
                 name = poi.get("name", "Unknown")
-                score = poi.get("priority_score", 0)
-                response_parts.append(f"{i}. **{name}** • Priority: {score:.0f}")
+                response_parts.append(f"{i}. {name}")
             
             if len(top_priority_pois) > 10:
                 response_parts.append(f"\n*...and {len(top_priority_pois) - 10} more great places to explore!*")
@@ -96,10 +95,8 @@ def create_response_formatter_node(model=None):
         # === DAY-BY-DAY ITINERARY ===
         if itinerary and itinerary.get("daily_itinerary"):
             daily_itinerary = itinerary["daily_itinerary"]
-            total_distance_km = itinerary.get("total_distance_km", 0)
             
             response_parts.append(f"### 🗓️ Your {trip_duration_days}-Day Itinerary")
-            response_parts.append(f"*Total travel distance: {total_distance_km:.1f} km*")
             response_parts.append("")
             
             # Starting point
@@ -111,20 +108,15 @@ def create_response_formatter_node(model=None):
             for day_plan in daily_itinerary:
                 day_num = day_plan.get("day", 0)
                 pois = day_plan.get("pois", [])
-                day_distance_km = day_plan.get("total_distance_km", 0)
                 
-                response_parts.append(f"**Day {day_num}** • {len(pois)} stops • {day_distance_km:.1f} km")
+                response_parts.append(f"**Day {day_num}** • {len(pois)} stops")
                 
                 for poi in pois:
                     seq_no = poi.get("sequence_no", 0)
-                    name = poi.get("google_matched_name", "Unknown")
-                    distance_m = poi.get("distance_from_previous_meters", 0)
-                    distance_km = distance_m / 1000
+                    # Try multiple field names for POI name
+                    name = poi.get("google_matched_name") or poi.get("name") or poi.get("google_place_id", "Unknown")
                     
-                    if seq_no == 1:
-                        response_parts.append(f"{seq_no}. {name}")
-                    else:
-                        response_parts.append(f"{seq_no}. {name} *(+{distance_km:.1f} km)*")
+                    response_parts.append(f"{seq_no}. {name}")
                 
                 response_parts.append("")
         
