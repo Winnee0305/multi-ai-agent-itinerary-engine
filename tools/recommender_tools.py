@@ -35,7 +35,10 @@ def load_pois_from_database(state: Optional[str] = None, golden_only: bool = Tru
     query = supabase.table("osm_pois").select("*")
     
     if state:
-        query = query.eq("state", state)
+        # Normalize state name for matching (trim whitespace, handle case)
+        normalized_state = state.strip()
+        print(f"DEBUG: Loading POIs for state='{normalized_state}'")
+        query = query.ilike("state", f"%{normalized_state}%")  # Case-insensitive partial match
     
     if golden_only:
         query = query.eq("in_golden_list", True)
@@ -45,6 +48,9 @@ def load_pois_from_database(state: Optional[str] = None, golden_only: bool = Tru
     
     # Execute query
     result = query.execute()
+    
+    loaded_count = len(result.data) if result.data else 0
+    print(f"DEBUG: Loaded {loaded_count} POIs for state='{state}'")
     
     return result.data if result.data else []
 
