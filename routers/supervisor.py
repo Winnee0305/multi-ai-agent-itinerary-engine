@@ -44,6 +44,135 @@ def get_graph_simple():
     return _graph_simple
 
 
+def _generate_reason_from_poi(poi: dict, user_preferences: list, llm=None) -> str:
+    """Generate a meaningful reason using LLM based on POI metadata."""
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.messages import HumanMessage
+    
+    # Check if preferred
+    if poi.get("is_preferred"):
+        return "Your preferred must-visit location."
+    
+    poi_name = poi.get("name", "")
+    poi_types = poi.get("google_types", [])
+    rating = poi.get("google_rating", 0)
+    reviews = poi.get("google_reviews", 0)
+    
+    # Handle both list and string formats for google_types
+    if isinstance(poi_types, str):
+        poi_types = [poi_types]
+    
+    # Build context for LLM
+    context = f"POI: {poi_name}\n"
+    if poi_types:
+        context += f"Type: {poi_types[0]}\n"
+    if rating:
+        context += f"Rating: {rating:.1f}★\n"
+    if user_preferences:
+        context += f"User interests: {', '.join(user_preferences)}"
+    
+    try:
+        # Reuse provided LLM instance or create new one
+        if llm is None:
+            llm = ChatGoogleGenerativeAI(
+                model=settings.DEFAULT_LLM_MODEL,
+                temperature=0.5,
+                timeout=3  # Increased timeout to handle slower models
+            )
+    
+        prompt = f"""In one short sentence (max 12 words), explain why this POI is worth visiting.
+
+{context}
+
+Requirements:
+- Specific and engaging based on type
+- Do not include the POI name
+- No period at end
+
+Reason:"""
+        
+        message = HumanMessage(content=prompt)
+        response = llm.invoke([message])
+        reason = response.content.strip().rstrip('.')
+        
+        if reason and len(reason) > 3:
+            return reason
+    except Exception as e:
+        print(f"LLM reason generation failed for {poi_name}: {e}")
+    
+    # Smart fallback: Use type first, then name patterns
+    # This ensures we get meaningful reasons even if LLM fails
+    
+    poi_types_str = " ".join([str(t).lower() for t in poi_types])
+    poi_name_lower = poi_name.lower()
+    
+    # Primary: Type-based mapping
+    type_map = {
+        "temple": "Important cultural and historical landmark",
+        "mosque": "Iconic place of worship with architectural significance",
+        "church": "Historic religious site worth visiting",
+        "restaurant": "Popular dining destination with local cuisine",
+        "cafe": "Great spot for coffee and local ambiance",
+        "market": "Local market offering authentic products",
+        "park": "Beautiful natural space for relaxation",
+        "waterfall": "Natural wonder with spectacular water views",
+        "mountain": "Scenic peak with panoramic views",
+        "museum": "Museum showcasing art, history, or culture",
+        "hiking": "Scenic hiking trail for nature lovers",
+        "beach": "Scenic coastal destination for beach activities",
+        "garden": "Beautiful garden destination showcasing flora",
+        "shrine": "Sacred religious site with cultural value",
+        "viewpoint": "Stunning viewpoint with panoramic views",
+        "gurdwara": "Important Sikh place of worship",
+        "memorial": "Historical memorial site with cultural significance",
+        "monument": "Notable monument with historical importance",
+        "gallery": "Gallery featuring local and contemporary art",
+    }
+    
+    # Check types first (primary fallback)
+    for type_key, reason in type_map.items():
+        if type_key in poi_types_str:
+            if rating >= 4.5:
+                return f"{reason} (Rated {rating:.1f}★)"
+            return reason
+    
+    # Secondary: Name-based patterns
+    name_patterns = {
+        "garden": "Beautiful garden showcasing local flora",
+        "temple": "Sacred site with cultural and architectural value",
+        "shrine": "Sacred site with cultural and architectural value",
+        "waterfall": "Scenic waterfall with stunning natural beauty",
+        "fall": "Scenic waterfall with stunning natural beauty",
+        "market": "Traditional market with authentic local products",
+        "bazaar": "Traditional bazaar with local crafts",
+        "gurdwara": "Important Sikh place of worship",
+        "curry house": "Authentic local dining with traditional cuisine",
+        "restaurant": "Authentic local dining establishment",
+        "valley": "Scenic valley offering beautiful landscape",
+        "cafe": "Cozy café with local ambiance",
+        "coffee": "Cozy café with coffee and local atmosphere",
+        "gunung": "Mountain peak with scenic hiking trails",
+        "mountain": "Mountain peak with scenic hiking trails",
+        "peak": "Mountain peak with scenic views",
+        "house": "Local destination worth exploring",
+    }
+    
+    for pattern_key, reason in name_patterns.items():
+        if pattern_key in poi_name_lower:
+            return reason
+    
+    # Tertiary: Rating-based fallback
+    if rating and rating >= 4.7 and reviews and reviews >= 100:
+        return f"Top-rated attraction ({rating:.1f}★ from {reviews}+ reviews)"
+    elif rating and rating >= 4.7:
+        return f"Highly-rated destination ({rating:.1f}★)"
+    elif rating and rating >= 4.0:
+        return f"Well-reviewed destination ({rating:.1f}★)"
+    
+    # Final fallback
+    return "Popular local attraction worth visiting"
+
+
 def transform_to_mobile_format(result: dict) -> dict:
     """
     Transform graph result to mobile-optimized format.
@@ -53,6 +182,7 @@ def transform_to_mobile_format(result: dict) -> dict:
     - Day assignments
     - Preferred POI flags
     - Minimal trip summary
+    - Meaningful recommendation reasons based on POI descriptions
     
     Args:
         result: Full graph execution result with itinerary.daily_itinerary structure
@@ -60,10 +190,23 @@ def transform_to_mobile_format(result: dict) -> dict:
     Returns:
         Mobile-optimized response dictionary
     """
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    
     pois_sequence = []
     
     itinerary = result.get("itinerary", {})
     daily_plans = itinerary.get("daily_itinerary", [])
+    user_preferences = result.get("user_preferences", [])
+    
+    # Create single LLM instance for all POIs (more efficient)
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model=settings.DEFAULT_LLM_MODEL,
+            temperature=0.5,
+            timeout=20
+        )
+    except Exception:
+        llm = None
     
     # Extract POIs with sequence numbers that restart each day
     for day_plan in daily_plans:
@@ -77,13 +220,17 @@ def transform_to_mobile_format(result: dict) -> dict:
                 # Skip POIs without valid Google Place ID
                 continue
             
+            # Generate meaningful reason based on POI data
+            reason = _generate_reason_from_poi(poi, user_preferences, llm)
+            
             pois_sequence.append({
                 "google_place_id": place_id,
                 "sequence_number": day_sequence,
                 "day": poi.get("day", day_number),
                 "name": poi.get("google_matched_name") or poi.get("name", "Unknown POI"),
                 "is_preferred": poi.get("is_preferred", False),
-                "distance_from_previous_meters": poi.get("distance_from_previous_meters", 0)
+                "distance_from_previous_meters": poi.get("distance_from_previous_meters", 0),
+                "recommendation_reason": reason
             })
             
             day_sequence += 1
@@ -152,6 +299,7 @@ class MobilePOI(BaseModel):
     name: str = Field(..., description="POI name for reference")
     is_preferred: bool = Field(default=False, description="User explicitly requested this POI")
     distance_from_previous_meters: float = Field(default=0, description="Distance from previous POI in sequence")
+    recommendation_reason: str = Field(default="", description="Why this POI is recommended based on description and context")
 
 
 class MobileItineraryResponse(BaseModel):
