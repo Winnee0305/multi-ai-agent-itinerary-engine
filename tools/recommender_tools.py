@@ -504,34 +504,37 @@ def _generate_seed_for_recommendations(
 
 def get_quick_recommendations_for_you(
     user_behavior: Optional[Dict[str, List[str]]] = None,
+    user_preferences: Optional[List[str]] = None,
     top_n: int = 5
 ) -> List[Dict[str, Any]]:
     """
     Fast personalized recommendations for "For You" page.
-    Uses simplified scoring focused on behavioral signals.
+    Prioritizes FAMOUS POIs that match user preferences.
     
-    **Randomness Strategy:**
-    - Samples from top 20 candidates using weighted random selection
-    - Scores used as weights (higher score = higher selection probability)
-    - Deterministic within 6-hour rotation windows
-    - Personalized per user behavior hash
+    **Scoring Strategy:**
+    - Base: Popularity score (higher = more famous)
+    - Preference match: ×1.8 boost if POI matches user interests
+    - Quality: ×1.3 boost for highly-rated POIs (4.5+ rating)
+    - Behavioral: Boost based on user viewing/collecting history
+    - Selection: Random weighted sampling from top 50 candidates
     
     Args:
         user_behavior: Optional behavioral signals (viewed, collected, trips)
+        user_preferences: Optional list of user interest categories for preference matching
         top_n: Number of recommendations (default 5)
     
     Returns:
-        List of top N POIs with scores (varied across time windows)
+        List of top N famous POIs matching preferences with weighted randomness
     """
     supabase = get_supabase()
     
-    # Load golden POIs with basic filtering (optimized query)
+    # Load FAMOUS golden POIs (higher threshold for quality)
     result = supabase.table("osm_pois").select(
         "google_place_id, name, state, lat, lon, popularity_score, "
-        "google_rating, wikidata_sitelinks"
+        "google_rating, google_reviews, wikidata_sitelinks, google_types"
     ).eq("in_golden_list", True).filter(
-        "popularity_score", "gte", 70
-    ).limit(100).execute()  # Only consider top 100 golden POIs for speed
+        "popularity_score", "gte", 85  # Increased from 70 to 85 - only very famous POIs
+    ).limit(200).execute()  # Consider top 200 golden POIs
     
     if not result.data:
         return []
@@ -543,7 +546,7 @@ def get_quick_recommendations_for_you(
     collected_ids = set(user_behavior.get("collected_place_ids", [])) if user_behavior else set()
     trip_ids = set(user_behavior.get("trip_place_ids", [])) if user_behavior else set()
     
-    # Apply FAST scoring
+    # Apply SMART SCORING with preference matching
     scored_pois = []
     
     for poi in pois:
@@ -554,21 +557,35 @@ def get_quick_recommendations_for_you(
         if base_score is None or base_score == 0:
             continue
         
-        # Start with base popularity
+        # Start with BASE POPULARITY (high weight for fame)
         score = float(base_score)
         
-        # Behavioral boost (HIGH WEIGHT for personalization)
-        if poi_id in trip_ids:
-            score *= 2.0  # Very strong signal - user actively used in trip
-        elif poi_id in collected_ids:
-            score *= 1.5  # Strong signal - user bookmarked
-        elif poi_id in viewed_ids:
-            score *= 1.2  # Medium signal - user showed interest
+        # Layer 1: Preference Matching Boost (NEW)
+        if user_preferences:
+            google_types = poi.get("google_types") or []
+            
+            for preference in user_preferences:
+                if preference in INTEREST_CATEGORIES:
+                    relevant_types = INTEREST_CATEGORIES[preference]
+                    for poi_type in google_types:
+                        if poi_type in relevant_types:
+                            score *= 1.8  # Strong boost for preference match
+                            break
         
-        # Quality boost (handle NULL google_rating)
+        # Layer 2: Quality Boost (reputation)
         google_rating = poi.get("google_rating", 0)
-        if google_rating and google_rating >= 4.5:
-            score *= 1.1
+        google_reviews = poi.get("google_reviews", 0)
+        
+        if google_rating and google_rating >= 4.5 and google_reviews >= 100:
+            score *= 1.3  # Boost highly-reviewed famous POIs
+        
+        # Layer 3: Behavioral Boost (personalization)
+        if poi_id in trip_ids:
+            score *= 1.5  # User actively used in trip
+        elif poi_id in collected_ids:
+            score *= 1.3  # User bookmarked
+        elif poi_id in viewed_ids:
+            score *= 1.1  # User viewed
         
         scored_pois.append({
             "google_place_id": poi_id,
@@ -584,8 +601,8 @@ def get_quick_recommendations_for_you(
     # Sort by score to identify top candidates
     scored_pois.sort(key=lambda x: x["score"], reverse=True)
     
-    # Get top 20 candidates for sampling pool (or all if fewer)
-    candidate_pool_size = min(20, len(scored_pois))
+    # Get top 50 candidates for sampling pool (only the most famous/relevant)
+    candidate_pool_size = min(50, len(scored_pois))
     candidates = scored_pois[:candidate_pool_size]
     
     # If we have fewer candidates than requested, return all
@@ -595,19 +612,13 @@ def get_quick_recommendations_for_you(
     # Extract scores for weighted sampling
     scores = [poi["score"] for poi in candidates]
     
-    # Generate seed for deterministic randomness
-    seed = _generate_seed_for_recommendations(user_behavior, rotation_hours=6)
-    random.seed(seed)
-    
-    # Weighted random sampling (higher scores = higher probability)
+    # Weighted random sampling from top 50 (truly random on each request)
+    # Higher scores = higher selection probability
     selected_pois = random.choices(
         candidates,
         weights=scores,
         k=top_n
     )
-    
-    # Reset random seed to avoid affecting other code
-    random.seed()
     
     # Remove duplicates while preserving order (edge case)
     seen = set()

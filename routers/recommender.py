@@ -40,6 +40,10 @@ class ForYouRequest(BaseModel):
         None, 
         description="User behavioral data (optional - if None, returns trending POIs)"
     )
+    user_preferences: Optional[List[str]] = Field(
+        None,
+        description="User interest categories (e.g., ['Culture', 'Food', 'Nature']) to match with POIs"
+    )
     top_n: int = Field(
         default=5, 
         ge=1, 
@@ -55,6 +59,7 @@ class ForYouRequest(BaseModel):
                     "collected_place_ids": ["ChIJ-UZrLrM1zDERJKid4cjiTbI"],
                     "trip_place_ids": ["ChIJ-UZrLrM1zDERJKid4cjiTbI"]
                 },
+                "user_preferences": ["Culture", "Food", "Nature"],
                 "top_n": 5
             }
         }
@@ -207,14 +212,15 @@ async def get_for_you_recommendations(request: ForYouRequest):
     Get personalized 'For You' page recommendations.
     
     Features:
-    - Returns POIs with variety across refreshes
-    - Weighted random sampling from top 20 candidates
-    - Consistent within 6-hour rotation windows
-    - Personalized based on user behavior hash
+    - Returns FAMOUS POIs that match user preferences
+    - Prioritizes highly popular (popularity >= 85) golden list POIs
+    - Matches user interest categories when provided
+    - Weighted random sampling for variety across refreshes
+    - Personalized based on user behavior (views, collections, trips)
     
     Returns:
-    - If user_behavior is provided: Personalized POIs based on behavioral signals
-    - If user_behavior is None/empty: Top trending golden POIs
+    - Famous POIs matching user preferences if provided
+    - Top trending POIs if no preferences given
     
     This is a lightweight endpoint optimized for fast app load times.
     """
@@ -228,16 +234,17 @@ async def get_for_you_recommendations(request: ForYouRequest):
                 "trip_place_ids": request.user_behavior.trip_place_ids
             }
         
-        # Call the logic function
+        # Call the logic function with user preferences
         recommendations = get_quick_recommendations_for_you(
             user_behavior=user_behavior_dict,
+            user_preferences=request.user_preferences,
             top_n=request.top_n
         )
         
         return {
             "success": True,
             "count": len(recommendations),
-            "is_personalized": user_behavior_dict is not None,
+            "is_personalized": user_behavior_dict is not None or request.user_preferences is not None,
             "recommendations": recommendations
         }
         
