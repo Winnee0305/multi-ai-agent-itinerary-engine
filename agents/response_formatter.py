@@ -41,6 +41,7 @@ def create_response_formatter_node(model=None):
         trip_duration_days = state.get("trip_duration_days", 0)
         num_travelers = state.get("num_travelers", 0)
         user_preferences = state.get("user_preferences", [])
+        request_type = state.get("request_type", "full_trip")
         
         recommendations = state.get("recommendations", {})
         top_priority_pois = state.get("top_priority_pois", [])
@@ -52,84 +53,113 @@ def create_response_formatter_node(model=None):
         # Build response parts (chatbot-friendly formatting)
         response_parts = []
         
-        # === TRIP OVERVIEW ===
-        response_parts.append(f"## 🌏 Trip to {destination_state}")
-        response_parts.append("")
-        response_parts.append(f"**Duration:** {trip_duration_days} days")
-        response_parts.append(f"**Travelers:** {num_travelers} people")
-        
-        if user_preferences:
-            preferences_str = ", ".join(user_preferences)
-            response_parts.append(f"**Interests:** {preferences_str}")
-        
-        response_parts.append("")
-        
-        # === TOP RECOMMENDATIONS ===
-        if top_priority_pois:
-            response_parts.append(f"### ⭐ Top {min(10, len(top_priority_pois))} Recommended Places")
+        # === HANDLE POI SUGGESTIONS MODE ===
+        if request_type == "poi_suggestions":
+            response_parts.append(f"🎯 Recommended Places in {destination_state}")
             response_parts.append("")
             
-            # Show top 10 in clean numbered list (without priority scores)
-            for i, poi in enumerate(top_priority_pois[:10], 1):
-                name = poi.get("name", "Unknown")
-                response_parts.append(f"{i}. {name}")
-            
-            if len(top_priority_pois) > 10:
-                response_parts.append(f"\n*...and {len(top_priority_pois) - 10} more great places to explore!*")
-            
-            response_parts.append("")
-        
-        # === ACTIVITY MIX ===
-        if activity_mix:
-            response_parts.append("### 🎯 Activity Breakdown")
-            response_parts.append("")
-            
-            # Sort by percentage and show top 5
-            sorted_activities = sorted(activity_mix.items(), key=lambda x: x[1], reverse=True)
-            
-            for category, percentage in sorted_activities[:5]:
-                response_parts.append(f"• **{category.capitalize()}**: {percentage*100:.0f}%")
-            
-            response_parts.append("")
-        
-        # === DAY-BY-DAY ITINERARY ===
-        if itinerary and itinerary.get("daily_itinerary"):
-            daily_itinerary = itinerary["daily_itinerary"]
-            
-            response_parts.append(f"### 🗓️ Your {trip_duration_days}-Day Itinerary")
-            response_parts.append("")
-            
-            # Starting point
-            if centroid:
-                response_parts.append(f"📍 **Starting from:** {centroid.get('name', 'Unknown')}")
+            if user_preferences:
+                preferences_str = ", ".join(user_preferences)
+                response_parts.append(f"Based on your interests: {preferences_str}")
                 response_parts.append("")
             
-            # Each day
-            for day_plan in daily_itinerary:
-                day_num = day_plan.get("day", 0)
-                pois = day_plan.get("pois", [])
-                
-                response_parts.append(f"**Day {day_num}** • {len(pois)} stops")
-                
-                for poi in pois:
-                    seq_no = poi.get("sequence_no", 0)
-                    # Try multiple field names for POI name
-                    name = poi.get("google_matched_name") or poi.get("name") or poi.get("google_place_id", "Unknown")
+            # Show only top 5 POIs in suggestions mode
+            if top_priority_pois:
+                for i, poi in enumerate(top_priority_pois[:5], 1):
+                    name = poi.get("name", "Unknown")
+                    poi_type = poi.get("osm_type", "Place")
+                    description = poi.get("description", "")
                     
-                    response_parts.append(f"{seq_no}. {name}")
+                    response_parts.append(f"**{i}. {name}**")
+                    if poi_type and poi_type != "other":
+                        response_parts.append(f"   *Category: {poi_type.capitalize()}*")
+                    if description:
+                        response_parts.append(f"   {description[:150]}...")  # First 150 chars of description
+                    response_parts.append("")
+            
+            response_parts.append("---")
+            response_parts.append("Want a full itinerary? Just tell me your trip duration and travel dates!")
+        
+        # === HANDLE FULL TRIP PLANNING MODE ===
+        else:
+            # === TRIP OVERVIEW ===
+            response_parts.append(f"🌏 Trip to {destination_state}")
+            response_parts.append("")
+            response_parts.append(f"**Duration:** {trip_duration_days} days")
+            response_parts.append(f"**Travelers:** {num_travelers} people")
+            
+            if user_preferences:
+                preferences_str = ", ".join(user_preferences)
+                response_parts.append(f"**Interests:** {preferences_str}")
+            
+            response_parts.append("")
+            
+            # === TOP RECOMMENDATIONS ===
+            if top_priority_pois:
+                response_parts.append(f"⭐ Top {min(10, len(top_priority_pois))} Recommended Places")
+                response_parts.append("")
+                
+                # Show top 10 in clean numbered list (without priority scores)
+                for i, poi in enumerate(top_priority_pois[:10], 1):
+                    name = poi.get("name", "Unknown")
+                    response_parts.append(f"{i}. {name}")
+                
+                if len(top_priority_pois) > 10:
+                    response_parts.append(f"\n*...and {len(top_priority_pois) - 10} more great places to explore!*")
                 
                 response_parts.append("")
-        
-        # === SUMMARY ===
-        if recommendations.get("summary_reasoning"):
-            response_parts.append("### 💡 Planning Notes")
-            response_parts.append("")
-            response_parts.append(recommendations["summary_reasoning"])
-            response_parts.append("")
-        
-        # Final note
-        response_parts.append("---")
-        response_parts.append("✅ Your itinerary is ready! Have an amazing trip! 🎉")
+            
+            # === ACTIVITY MIX ===
+            if activity_mix:
+                response_parts.append("🎯 Activity Breakdown")
+                response_parts.append("")
+                
+                # Sort by percentage and show top 5
+                sorted_activities = sorted(activity_mix.items(), key=lambda x: x[1], reverse=True)
+                
+                for category, percentage in sorted_activities[:5]:
+                    response_parts.append(f"• **{category.capitalize()}**: {percentage*100:.0f}%")
+                
+                response_parts.append("")
+            
+            # === DAY-BY-DAY ITINERARY ===
+            if itinerary and itinerary.get("daily_itinerary"):
+                daily_itinerary = itinerary["daily_itinerary"]
+                
+                response_parts.append(f"🗓️ Your {trip_duration_days}-Day Itinerary")
+                response_parts.append("")
+                
+                # Starting point
+                if centroid:
+                    response_parts.append(f"📍 **Starting from:** {centroid.get('name', 'Unknown')}")
+                    response_parts.append("")
+                
+                # Each day
+                for day_plan in daily_itinerary:
+                    day_num = day_plan.get("day", 0)
+                    pois = day_plan.get("pois", [])
+                    
+                    response_parts.append(f"**Day {day_num}** • {len(pois)} stops")
+                    
+                    for poi in pois:
+                        seq_no = poi.get("sequence_no", 0)
+                        # Try multiple field names for POI name
+                        name = poi.get("google_matched_name") or poi.get("name") or poi.get("google_place_id", "Unknown")
+                        
+                        response_parts.append(f"{seq_no}. {name}")
+                    
+                    response_parts.append("")
+            
+            # === SUMMARY ===
+            if recommendations.get("summary_reasoning"):
+                response_parts.append("💡 Planning Notes")
+                response_parts.append("")
+                response_parts.append(recommendations["summary_reasoning"])
+                response_parts.append("")
+            
+            # Final note
+            response_parts.append("---")
+            response_parts.append("✅ Your itinerary is ready! Have an amazing trip! 🎉")
         
         # Join all parts
         formatted_response = "\n".join(response_parts)

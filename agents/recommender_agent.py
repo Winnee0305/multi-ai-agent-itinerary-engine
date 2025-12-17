@@ -43,6 +43,7 @@ def create_recommender_node(model=None):
         num_travelers = state.get("num_travelers", 2)
         trip_duration_days = state.get("trip_duration_days", 3)
         preferred_pois = state.get("preferred_pois")
+        request_type = state.get("request_type", "full_trip")
         
         # Validate required fields
         if not destination_state:
@@ -87,12 +88,13 @@ def create_recommender_node(model=None):
                 f"{summary}"
             )
             
-            # Return state updates
+            # Return state updates - preserve request_type
             return {
                 "messages": [AIMessage(content=response_content)],
                 "recommendations": recommendations,
                 "top_priority_pois": top_priority_pois,
                 "activity_mix": activity_mix,
+                "request_type": request_type,  # Preserve request type
                 "next_step": "plan"  # Signal to move to planner
             }
             

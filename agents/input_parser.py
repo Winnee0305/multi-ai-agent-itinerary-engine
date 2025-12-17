@@ -42,6 +42,10 @@ class TripContext(BaseModel):
         default=50,
         description="Number of POI recommendations to generate"
     )
+    request_type: str = Field(
+        default="full_trip",
+        description="Type of request: 'full_trip', 'poi_suggestions', or 'general_question'"
+    )
 
 
 def create_input_parser_node(model):
@@ -84,19 +88,28 @@ def create_input_parser_node(model):
         # Create parsing prompt (use HumanMessage instead of SystemMessage for Gemini)
         parsing_prompt = f"""You are a travel planning assistant for Malaysia tourism.
 
-Extract structured information from the user's trip request and return ONLY valid JSON.
+Extract structured information from the user's request and return ONLY valid JSON.
 
 {parser.get_format_instructions()}
 
-Important guidelines:
+IMPORTANT: Detect the request type:
+- 'full_trip': User is planning a multi-day trip (mentions duration, destination)
+- 'poi_suggestions': User just wants POI suggestions/recommendations (no trip duration)
+- 'general_question': User asks about culture, history, etc. NOT trip planning
+
+Guidelines:
 1. For destination_state, use the official Malaysian state name (e.g., "Penang", "Kuala Lumpur", "Malacca")
 2. For user_preferences, choose from: Art, Culture, Adventure, Nature, Food, Shopping, History, Religion, Entertainment, Relaxation
-3. If information is missing, use these defaults:
+3. For request_type:
+   - If "plan", "trip", "itinerary", "days", or duration mentioned → 'full_trip'
+   - If "suggest", "recommend", "what to visit", "best places" → 'poi_suggestions'
+   - If asking about culture, history, food culture, etc. without trip context → 'general_question'
+4. If information is missing, use defaults:
    - num_travelers: 2
-   - trip_duration_days: 3
+   - trip_duration_days: 3 (but set to 1 for poi_suggestions)
    - user_preferences: ["Culture", "Food", "Nature"]
-   - num_pois: 50
-4. Extract specific POI names if mentioned (e.g., "Kek Lok Si Temple", "Petronas Towers")
+   - num_pois: 50 (but set to 5 for poi_suggestions)
+5. Extract specific POI names if mentioned
 
 User request: {user_message.content}
 
@@ -110,9 +123,38 @@ Return ONLY the JSON object, no other text."""
             # Convert dict to TripContext for attribute access
             parsed_context = TripContext(**parsed_dict)
             
+            # Handle different request types
+            request_type = parsed_context.request_type
+            
+            # If it's a general question, skip the planning flow
+            if request_type == "general_question":
+                # Use LLM to answer general questions
+                general_answer_prompt = f"""You are a helpful travel information assistant for Malaysia.
+Answer the user's question about Malaysian culture, history, food, customs, etc.
+Be friendly, informative, and relevant to Malaysia tourism.
+
+User question: {user_message.content}
+
+Provide a helpful, conversational answer."""
+                
+                general_response = model.invoke([HumanMessage(content=general_answer_prompt)])
+                return {
+                    "messages": [AIMessage(content=general_response.content)],
+                    "next_step": "complete"  # Skip planning, go straight to complete
+                }
+            
+            # For POI suggestions, limit to 5 POIs
+            if request_type == "poi_suggestions":
+                parsed_context.num_pois = 5
+                parsed_context.trip_duration_days = 1
+            
             # Create confirmation message
             preferences_str = ", ".join(parsed_context.user_preferences)
-            confirmation = f"Planning a {parsed_context.trip_duration_days}-day trip to {parsed_context.destination_state} for {parsed_context.num_travelers} traveler(s). Interests: {preferences_str}."
+            
+            if request_type == "poi_suggestions":
+                confirmation = f"Finding the best {parsed_context.num_pois} POIs in {parsed_context.destination_state} for you. Interests: {preferences_str}."
+            else:
+                confirmation = f"Planning a {parsed_context.trip_duration_days}-day trip to {parsed_context.destination_state} for {parsed_context.num_travelers} traveler(s). Interests: {preferences_str}."
             
             if parsed_context.preferred_pois:
                 confirmation += f" Must-visit POIs: {', '.join(parsed_context.preferred_pois)}."
@@ -126,6 +168,7 @@ Return ONLY the JSON object, no other text."""
                 "trip_duration_days": parsed_context.trip_duration_days,
                 "preferred_pois": parsed_context.preferred_pois,
                 "num_pois": parsed_context.num_pois,
+                "request_type": request_type,
                 "next_step": "recommend"
             }
             

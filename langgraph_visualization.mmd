@@ -1,0 +1,23 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	parse_input(parse_input)
+	recommend(recommend)
+	plan(plan)
+	format_response(format_response)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> parse_input;
+	format_response -.-> __end__;
+	parse_input -.-> __end__;
+	parse_input -.-> recommend;
+	plan -.-> __end__;
+	plan -.-> format_response;
+	recommend -.-> __end__;
+	recommend -.-> plan;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

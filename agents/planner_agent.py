@@ -43,6 +43,7 @@ def create_planner_node(model=None):
         top_priority_pois = state.get("top_priority_pois", [])
         trip_duration_days = state.get("trip_duration_days", 3)
         max_pois_per_day = state.get("max_pois_per_day", 6)  # Get from state or default to 6
+        request_type = state.get("request_type", "full_trip")
         
         # Validate inputs
         if not top_priority_pois:
@@ -120,12 +121,13 @@ def create_planner_node(model=None):
             for day_plan in daily_itineraries:
                 optimized_sequence.extend(day_plan["pois"])
             
-            # Return state updates
+            # Return state updates - preserve request_type
             return {
                 "messages": [AIMessage(content=response_content)],
                 "itinerary": itinerary,
                 "centroid": centroid,
                 "optimized_sequence": optimized_sequence,
+                "request_type": request_type,  # Preserve request type
                 "next_step": "format_response"  # Signal to format final response
             }
             

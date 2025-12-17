@@ -36,10 +36,14 @@ def route_next_step(state: TripPlannerState) -> Literal["parse_input", "recommen
         Next node name or END
     """
     next_step = state.get("next_step")
+    request_type = state.get("request_type", "full_trip")
     
     if next_step == "recommend":
         return "recommend"
     elif next_step == "plan":
+        # Skip planning for POI suggestions - go straight to formatting
+        if request_type == "poi_suggestions":
+            return "format_response"
         return "plan"
     elif next_step == "format_response":
         return "format_response"
@@ -98,6 +102,7 @@ def create_supervisor_graph(model):
         route_next_step,
         {
             "plan": "plan",
+            "format_response": "format_response",
             "__end__": END
         }
     )

@@ -48,4 +48,5 @@ class TripPlannerState(TypedDict):
     
     # ===== Control Flow =====
     next_step: Optional[Literal["parse_input", "recommend", "plan", "format_response", "complete", "error"]]
+    request_type: Optional[Literal["full_trip", "poi_suggestions", "general_question"]]  # Type of request detected
     error_message: Optional[str]
