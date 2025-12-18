@@ -9,12 +9,16 @@ psycopg2-binary
 supabase
 postgrest
 
-# Geospatial
+# Geospatial & Data Analysis
 geopandas
 pandas
 numpy
 shapely
 scikit-learn
+
+# Visualization (Required for evaluation.py)
+matplotlib>=3.5.0
+seaborn>=0.12.0
 
 # Utilities
 SPARQLWrapper

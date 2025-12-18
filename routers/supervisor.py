@@ -226,6 +226,7 @@ def transform_to_mobile_format(result: dict) -> dict:
             pois_sequence.append({
                 "google_place_id": place_id,
                 "sequence_number": day_sequence,
+                "osm_type": poi.get("osm_type", "N/A"),
                 "day": poi.get("day", day_number),
                 "name": poi.get("google_matched_name") or poi.get("name", "Unknown POI"),
                 "is_preferred": poi.get("is_preferred", False),
