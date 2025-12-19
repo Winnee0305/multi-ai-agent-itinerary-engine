@@ -2,7 +2,7 @@
 MULTI-AI AGENT ITINERARY ENGINE - EVALUATION REPORT
 ======================================================================
 
-Generated: 2025-12-18 14:11:48
+Generated: 2025-12-18 20:35:21
 
 TRIP SUMMARY
 ----------------------------------------------------------------------
@@ -27,65 +27,65 @@ religion        ████░░░░░░░░░░░░░░░░░�
 DAILY ITINERARIES
 ----------------------------------------------------------------------
 
-Day 1 (Total Distance: 13.8 km)
-──────────────────────────────────────────────────────────────────────
-  1. Hin Bus Depot Art Center                 (Attraction)|  Distance:    0.0 km | Cumulative:    0.0 km
-  2. New World Park                           (Park)|  Distance:    0.0 km | Cumulative:    0.0 km
-  3. Yap Kongsi                               (Attraction)|  Distance:    0.9 km | Cumulative:    0.9 km
-  4. Penang Botanic Gardens                   (Park)|  Distance:    1.2 km | Cumulative:    2.1 km
-  5. The Habitat Penang Hill                  (Mountain)|  Distance:    5.7 km | Cumulative:    7.9 km
-  6. Kek Lok Si Temple                        (Temple)|  Distance:    3.2 km | Cumulative:   11.0 km
-
-Day 2 (Total Distance: 42.5 km)
+Day 1 (Total Distance: 43.1 km)
 ──────────────────────────────────────────────────────────────────────
   1. Straits Quay                             (Attraction)|  Distance:    0.0 km | Cumulative:    0.0 km
-  2. War Emperor's Temple                     (Temple)|  Distance:    0.0 km | Cumulative:    0.0 km
-  3. Penang Bird Park                         (Park)|  Distance:    5.3 km | Cumulative:    5.3 km
-  4. Robina Eco Park                          (Park)|  Distance:    6.6 km | Cumulative:   11.9 km
-  5. Ferringhi Walk                           (Attraction)|  Distance:    9.2 km | Cumulative:   21.1 km
-  6. Muka Head Lighthouse                     (Lighthouse)|  Distance:   14.5 km | Cumulative:   35.6 km
+  2. New World Park                           (Park)|  Distance:    0.0 km | Cumulative:    0.0 km
+  3. Yap Kongsi                               (Attraction)|  Distance:    4.5 km | Cumulative:    4.5 km
+  4. Kek Lok Si Temple                        (Temple)|  Distance:    1.2 km | Cumulative:    5.7 km
+  5. Robina Eco Park                          (Park)|  Distance:    7.2 km | Cumulative:   12.9 km
+  6. Mengkuang                                (Attraction)|  Distance:   14.5 km | Cumulative:   27.4 km
 
-Day 3 (Total Distance: 49.7 km)
+Day 2 (Total Distance: 28.2 km)
 ──────────────────────────────────────────────────────────────────────
-  1. Gurney Paragon                           (Attraction)|  Distance:    0.0 km | Cumulative:    0.0 km
-  2. Gurney Plaza                             (Attraction)|  Distance:    0.0 km | Cumulative:    0.0 km
-  3. Campbell Street Market                   (Market)|  Distance:    0.2 km | Cumulative:    0.2 km
-  4. Tropical Spice Garden                    (Park)|  Distance:    3.6 km | Cumulative:    3.9 km
-  5. Penang Tropical Fruit Farm               (Attraction)|  Distance:   12.9 km | Cumulative:   16.7 km
-  6. Bukit Batu Kawan                         (Attraction)|  Distance:    5.6 km | Cumulative:   22.3 km
+  1. Penang Tropical Fruit Farm               (Attraction)|  Distance:    0.0 km | Cumulative:    0.0 km
+  2. Muka Head Lighthouse                     (Lighthouse)|  Distance:    0.0 km | Cumulative:    0.0 km
+  3. Ferringhi Walk                           (Attraction)|  Distance:    7.2 km | Cumulative:    7.2 km
+  4. Penang Botanic Gardens                   (Park)|  Distance:    6.9 km | Cumulative:   14.2 km
+  5. Penang Bazaar                            (Market)|  Distance:    6.2 km | Cumulative:   20.3 km
+  6. Fisherman's Wharf                        (Jetty)|  Distance:    5.1 km | Cumulative:   25.4 km
+
+Day 3 (Total Distance: 34.1 km)
+──────────────────────────────────────────────────────────────────────
+  1. Chowrasta Market                         (Market)|  Distance:    0.0 km | Cumulative:    0.0 km
+  2. Campbell Street Market                   (Market)|  Distance:    0.0 km | Cumulative:    0.0 km
+  3. Gurney Plaza                             (Attraction)|  Distance:    0.5 km | Cumulative:    0.5 km
+  4. The Habitat Penang Hill                  (Mountain)|  Distance:    3.6 km | Cumulative:    4.1 km
+  5. Queensbay Mall                           (Market)|  Distance:    4.9 km | Cumulative:    9.1 km
+  6. Bukit Batu Kawan                         (Attraction)|  Distance:   10.9 km | Cumulative:   20.0 km
 
 TRIP METRICS
 ----------------------------------------------------------------------
-Total Trip Distance: 106.0 km
-Average Daily Distance: 35.3 km
+Total Trip Distance: 105.5 km
+Average Daily Distance: 35.2 km
 Centroid POI: Penang Botanic Gardens
-End-to-End Latency: 3.4 seconds
+End-to-End Latency: 2.4 seconds
 
 TOP 5 POIS BY PRIORITY SCORE
 ----------------------------------------------------------------------
-1. Penang Botanic Gardens
+1. Mengkuang
+   Priority Score: 258
+   Category: Attraction
+2. Penang Botanic Gardens
    Priority Score: 258
    Category: Park
-2. Straits Quay
+3. Straits Quay
    Priority Score: 255
    Category: Attraction
-3. War Emperor's Temple
-   Priority Score: 249
-   Category: Temple
-4. Hin Bus Depot Art Center
-   Priority Score: 243
-   Category: Attraction
-5. The Habitat Penang Hill
+4. Kek Lok Si Temple
    Priority Score: 237
-   Category: Mountain
+   Category: Temple
+5. Robina Eco Park
+   Priority Score: 237
+   Category: Park
 
 ======================================================================
 Performance Metrics Summary
 ======================================================================
-• Actual E2E Latency: 3.4s
-• Estimated P95 Latency: 4.6s (±37%)
-• Input Parser Time: ~48% of total (1.61s) (LLM-intensive)
-• Algorithm Time (Recommender + Planner): ~20% of total (0.67s)
+• Actual E2E Latency: 2.4s
+• Estimated P95 Latency: 3.2s (±37%)
+• Input Parser Time: ~48% of total (1.14s) (LLM-intensive)
+• Algorithm Time (Recommender + Planner): ~20% of total (0.47s)
 • Route Optimization Quality: ~8-10% improvement over naive routing
 • Database Query Performance: <125ms on 8,000+ POIs
 ======================================================================
