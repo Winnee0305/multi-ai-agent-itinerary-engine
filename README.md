@@ -2,6 +2,10 @@
 
 A sophisticated AI-powered travel itinerary planning system built with multi-agent architecture using LangGraph, LangChain, and Google's Gemini 2.5 Flash LLM. The system intelligently plans multi-day trips to Malaysia with geographically optimized routes and personalized recommendations.
 
+## 📱 Full Application
+- Frontend - Mobile Application `Tripora`: https://github.com/Winnee0305/tripora
+- Backend - AI Service `Multi-AI Agent Itinerary Engine`: https://github.com/Winnee0305/multi-ai-agent-itinerary-engine
+
 ## 🎯 System Overview
 
 The Multi-AI-Agent Itinerary Engine is an intelligent travel planning assistant that can:
@@ -544,17 +548,7 @@ Update `tools/planner_tools.py`:
 - Implement new clustering algorithms
 - Set via `clustering_strategy` parameter
 
-## 📚 Documentation
-
-- [LangGraph Migration](LANGGRAPH_MIGRATION.md) - Architecture evolution
-- [New Features Guide](NEW_FEATURES_GUIDE.md) - Multi-request-type support
-- [Planner Tools](PLANNER_TOOLS_README.md) - Spatial operations reference
-- [Multi-Day Implementation](MULTI_DAY_IMPLEMENTATION.md) - Clustering details
 
 ## 📝 License
 
 This project is part of a Bachelor in Computer Science capstone project.
-
-## 🙋 Support
-
-For issues, questions, or contributions, please refer to the documentation files or contact the development team.
